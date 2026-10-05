@@ -85,8 +85,9 @@ function mulberry32(seed) {
 }
 
 function coverHues(id) {
-  const h1 = hashStr(id) % 360;
-  return { h1, h2: (h1 + 50) % 360 };
+  // Night-sky reds/crimsons/embers — never rainbow.
+  const h1 = 346 + (hashStr(id) % 26);
+  return { h1, h2: (h1 + 16) % 360 };
 }
 
 function esc(s) {
@@ -366,7 +367,7 @@ function makePeaks(trackId, n = 520) {
   return peaks;
 }
 
-const SEG_COLORS = ["#e5484d", "#9b8cff", "#4fd1a5", "#f5b544", "#5aa9ff"];
+const SEG_COLORS = ["#e50914", "#f5b544", "#d97b2f", "#ff6b5e", "#8f1d22"];
 
 function drawWave(canvas, peaks, segments, duration, playheadT) {
   const dpr = window.devicePixelRatio || 1;
@@ -397,7 +398,7 @@ function drawWave(canvas, peaks, segments, duration, playheadT) {
     const x = i * bw;
     const ph = peaks[i] * (h * 0.86);
     const y = (h - ph) / 2;
-    ctx.fillStyle = x <= playedX ? "rgba(245,181,68,0.95)" : "rgba(154,148,168,0.5)";
+    ctx.fillStyle = x <= playedX ? "rgba(229,9,20,0.92)" : "rgba(154,148,168,0.5)";
     ctx.fillRect(x, y, Math.max(1, bw - 0.6), ph);
   }
 
@@ -772,8 +773,8 @@ function drawMiniWave(canvas, peaks) {
   ctx.clearRect(0, 0, w, h);
   const bw = w / peaks.length;
   const grad = ctx.createLinearGradient(0, 0, w, 0);
-  grad.addColorStop(0, "#e5484d");
-  grad.addColorStop(1, "#9b8cff");
+  grad.addColorStop(0, "#e50914");
+  grad.addColorStop(1, "#f5b544");
   ctx.fillStyle = grad;
   peaks.forEach((p, i) => {
     const ph = Math.max(2, p * h);
@@ -1043,6 +1044,14 @@ document.querySelectorAll(".nav-link").forEach((b) => {
     else openDetail(state.lastTrackId || DEMO_TRACK.id);
   });
 });
+
+window.addEventListener(
+  "scroll",
+  () => {
+    document.getElementById("topbar").classList.toggle("scrolled", window.scrollY > 40);
+  },
+  { passive: true }
+);
 
 (async function init() {
   await checkApi();
