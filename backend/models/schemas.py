@@ -24,6 +24,12 @@ class LyricLine(BaseModel):
     end: float = Field(..., gt=0.0)
     text: str
     rhyme: str = Field(default="", description="Rhyme-scheme letter, e.g. A, B")
+    confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Transcription confidence 0-1 from Whisper log-probs; None when unknown",
+    )
 
 
 class ChordEvent(BaseModel):

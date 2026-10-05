@@ -1,9 +1,31 @@
 """Speech-to-text for lyric transcription (optional dependency)."""
 from __future__ import annotations
 
+import math
+
+
+def confidence_of(avg_logprob: float, no_speech_prob: float) -> float:
+    """Map Whisper segment scores to a 0-1 confidence.
+
+    avg_logprob is typically in [-2, 0]; exp() maps that to (0, 1].
+    Multiplied by (1 - no_speech_prob) so segments that are probably
+    not speech score low even when the log-prob looks fine.
+    """
+    try:
+        base = math.exp(float(avg_logprob))
+        if math.isnan(base):
+            base = 0.0
+    except (TypeError, ValueError, OverflowError):
+        base = 0.0
+    try:
+        speech = 1.0 - float(no_speech_prob)
+    except (TypeError, ValueError):
+        speech = 1.0
+    return round(max(0.0, min(1.0, base * max(0.0, speech))), 3)
+
 
 def transcribe(path, model_name="base"):
-    """Transcribe audio to segments with word timestamps.
+    """Transcribe audio to segments with word timestamps and confidence.
 
     Returns {"available": False, ...} when faster-whisper isn't installed.
     """
@@ -30,6 +52,10 @@ def transcribe(path, model_name="base"):
                 "start": round(seg.start, 2),
                 "end": round(seg.end, 2),
                 "words": words,
+                "confidence": confidence_of(
+                    getattr(seg, "avg_logprob", -1.0),
+                    getattr(seg, "no_speech_prob", 0.0),
+                ),
             }
         )
     return {"available": True, "language": info.language, "lines": out}

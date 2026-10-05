@@ -119,6 +119,7 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
                         end=float(seg["end"]),
                         text=seg["text"],
                         rhyme=letters[i] if i < len(letters) else "",
+                        confidence=seg.get("confidence"),
                     )
                 )
             rhyme_summary = schemes[0]["scheme"] if schemes else ""

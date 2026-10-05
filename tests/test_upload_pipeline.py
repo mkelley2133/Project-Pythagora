@@ -156,3 +156,29 @@ def test_audio_404_when_file_missing():
         json={"title": "Ghost", "artist": "X", "original_file_path": "/storage/nope.mp3"},
     )
     assert client.get(f"/tracks/{r.json()['id']}/audio").status_code == 404
+
+
+def test_transcription_confidence_mapping():
+    from workers.analysis.transcribe import confidence_of
+
+    # confident speech-like segment
+    assert confidence_of(-0.05, 0.01) > 0.9
+    # uncertain segment
+    assert confidence_of(-1.5, 0.1) < 0.3
+    # probably-not-speech tanks the score even with decent logprob
+    assert confidence_of(-0.1, 0.95) < 0.1
+    # garbage in -> 0, never crashes
+    assert confidence_of(float("nan"), 0.0) == 0.0
+    assert 0.0 <= confidence_of(-0.7, 0.2) <= 1.0
+
+
+def test_transcribe_unavailable_without_faster_whisper():
+    from workers.analysis.transcribe import transcribe
+
+    try:
+        import faster_whisper  # noqa: F401
+        available_expected = True
+    except ImportError:
+        available_expected = False
+    result = transcribe("/tmp/waytoolong.wav")
+    assert result["available"] == available_expected
