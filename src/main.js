@@ -413,31 +413,6 @@ function drawWave(canvas, peaks, segments, duration, playheadT) {
   ctx.fill();
 }
 
-function drawHeroWave() {
-  const canvas = document.getElementById("hero-wave");
-  if (!canvas) return;
-  const peaks = makePeaks("hero", 220);
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth || 520;
-  const h = 220;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const bw = w / peaks.length;
-  const grad = ctx.createLinearGradient(0, 0, w, 0);
-  grad.addColorStop(0, "#e5484d");
-  grad.addColorStop(0.5, "#9b8cff");
-  grad.addColorStop(1, "#4fd1a5");
-  ctx.fillStyle = grad;
-  peaks.forEach((p, i) => {
-    const ph = p * h * 0.8;
-    ctx.globalAlpha = 0.85;
-    ctx.fillRect(i * bw, (h - ph) / 2, Math.max(1, bw - 1), ph);
-  });
-  ctx.globalAlpha = 1;
-}
-
 /* ------------------------------------------------------------------ */
 /* Detail view                                                        */
 /* ------------------------------------------------------------------ */
@@ -695,36 +670,225 @@ function renderDetail(track, telemetry) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Upload + job tracking                                              */
+/* Upload + job tracking — drag & drop ingest with live previews      */
 /* ------------------------------------------------------------------ */
+const upState = { audioFile: null, artFile: null, artUrl: null };
+
+const PIPE_STAGES = [
+  "Loading audio",
+  "Measuring tempo & key",
+  "Recognizing chords",
+  "Mapping sections & texture",
+  "Rendering waveform",
+  "Vocal forensics",
+  "Transcribing lyrics",
+  "Finalizing",
+];
+
+function syncPreview() {
+  const t = document.getElementById("up-title").value.trim() || "Untitled";
+  const a = document.getElementById("up-artist").value.trim() || "Unknown Artist";
+  document.getElementById("up-preview-title").textContent = t;
+  document.getElementById("up-preview-artist").textContent = a;
+  document.getElementById("up-prog-title").textContent = `Analyzing “${t}”`;
+}
+
+function drawMiniWave(canvas, peaks) {
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const bw = w / peaks.length;
+  const grad = ctx.createLinearGradient(0, 0, w, 0);
+  grad.addColorStop(0, "#e5484d");
+  grad.addColorStop(1, "#9b8cff");
+  ctx.fillStyle = grad;
+  peaks.forEach((p, i) => {
+    const ph = Math.max(2, p * h);
+    ctx.fillRect(i * bw, (h - ph) / 2, Math.max(1, bw - 1), ph);
+  });
+}
+
+async function handleAudioFile(file) {
+  if (!/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(file.name)) {
+    toast("Unsupported audio type.");
+    return;
+  }
+  upState.audioFile = file;
+  document.getElementById("up-audio-idle").classList.add("hidden");
+  document.getElementById("up-audio-file").classList.remove("hidden");
+  document.getElementById("up-audio-name").textContent = file.name;
+  document.getElementById("up-audio-sub").textContent = "decoding…";
+  try {
+    const ab = await file.arrayBuffer();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    const buf = await ac.decodeAudioData(ab);
+    const ch = buf.getChannelData(0);
+    const n = 120;
+    const peaks = [];
+    const block = Math.max(1, Math.floor(ch.length / n));
+    for (let i = 0; i < n; i++) {
+      let m = 0;
+      for (let j = i * block; j < Math.min((i + 1) * block, ch.length); j += 9) {
+        m = Math.max(m, Math.abs(ch[j]));
+      }
+      peaks.push(Math.min(1, m));
+    }
+    drawMiniWave(document.getElementById("up-wave"), peaks);
+    document.getElementById("up-audio-sub").textContent =
+      `${fmtTime(buf.duration)} · ${(file.size / 1048576).toFixed(1)} MB`;
+    if (!document.getElementById("up-title").value.trim()) {
+      document.getElementById("up-title").value = file.name
+        .replace(/\.[^.]+$/, "")
+        .replace(/[_-]+/g, " ");
+      syncPreview();
+    }
+    ac.close();
+  } catch {
+    document.getElementById("up-audio-sub").textContent = `${(file.size / 1048576).toFixed(1)} MB`;
+  }
+}
+
+function handleArtFile(file) {
+  if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
+    toast("Unsupported image type.");
+    return;
+  }
+  upState.artFile = file;
+  if (upState.artUrl) URL.revokeObjectURL(upState.artUrl);
+  upState.artUrl = URL.createObjectURL(file);
+  const img = document.getElementById("up-art-preview");
+  img.src = upState.artUrl;
+  img.classList.remove("hidden");
+  document.getElementById("up-art-idle").classList.add("hidden");
+  document.getElementById("up-art-clear").classList.remove("hidden");
+  const cover = document.getElementById("up-preview-cover");
+  cover.querySelector("img")?.remove();
+  const ci = document.createElement("img");
+  ci.className = "cover-img";
+  ci.src = upState.artUrl;
+  ci.alt = "";
+  cover.prepend(ci);
+}
+
+function clearAudio() {
+  upState.audioFile = null;
+  document.getElementById("up-audio").value = "";
+  document.getElementById("up-audio-idle").classList.remove("hidden");
+  document.getElementById("up-audio-file").classList.add("hidden");
+}
+
+function clearArt() {
+  upState.artFile = null;
+  if (upState.artUrl) URL.revokeObjectURL(upState.artUrl);
+  upState.artUrl = null;
+  document.getElementById("up-artwork").value = "";
+  document.getElementById("up-art-idle").classList.remove("hidden");
+  document.getElementById("up-art-preview").classList.add("hidden");
+  document.getElementById("up-art-clear").classList.add("hidden");
+  document.querySelector("#up-preview-cover img")?.remove();
+}
+
+function resetUploadModal() {
+  clearAudio();
+  clearArt();
+  document.getElementById("up-title").value = "";
+  document.getElementById("up-artist").value = "";
+  document.getElementById("up-form").classList.remove("hidden");
+  document.getElementById("up-progress").classList.add("hidden");
+  const btn = document.getElementById("up-submit");
+  btn.disabled = false;
+  btn.textContent = "Upload & analyze";
+  syncPreview();
+}
+
+function wireDropzone(dzId, inputId, handler) {
+  const dz = document.getElementById(dzId);
+  const input = document.getElementById(inputId);
+  dz.addEventListener("click", (e) => {
+    if (!e.target.closest(".dz-clear")) input.click();
+  });
+  input.addEventListener("change", () => {
+    if (input.files[0]) handler(input.files[0]);
+  });
+  ["dragenter", "dragover"].forEach((ev) =>
+    dz.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dz.classList.add("drag");
+    })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    dz.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dz.classList.remove("drag");
+    })
+  );
+  dz.addEventListener("drop", (e) => {
+    const f = e.dataTransfer.files[0];
+    if (f) handler(f);
+  });
+}
+
+function renderPipeStages() {
+  document.getElementById("up-stages").innerHTML = PIPE_STAGES.map(
+    (s) => `<li><span class="st-ic"></span><span>${s}</span></li>`
+  ).join("");
+}
+
+function markPipeStages(stageLabel, allDone) {
+  const idx = allDone
+    ? PIPE_STAGES.length
+    : PIPE_STAGES.findIndex((s) => stageLabel.startsWith(s));
+  document.querySelectorAll("#up-stages li").forEach((li, i) => {
+    li.classList.toggle("done", i < idx);
+    li.classList.toggle("active", i === idx);
+  });
+}
+
 function wireUpload() {
   const modal = document.getElementById("upload-modal");
-  document.getElementById("upload-btn").addEventListener("click", () => {
+  const open = () => {
     if (!apiLive) {
       toast("Upload needs the API — run it locally to ingest tracks.");
       return;
     }
+    resetUploadModal();
     modal.classList.remove("hidden");
-  });
-  document.getElementById("up-cancel").addEventListener("click", () => modal.classList.add("hidden"));
+  };
+  const close = () => modal.classList.add("hidden");
+  document.getElementById("upload-btn").addEventListener("click", open);
+  document.getElementById("up-cancel").addEventListener("click", close);
+  document.getElementById("up-close").addEventListener("click", close);
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) modal.classList.add("hidden");
+    if (e.target === modal) close();
   });
+  wireDropzone("up-audio-dz", "up-audio", handleAudioFile);
+  wireDropzone("up-art-dz", "up-artwork", handleArtFile);
+  document.getElementById("up-audio-clear").addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearAudio();
+  });
+  document.getElementById("up-art-clear").addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearArt();
+  });
+  document.getElementById("up-title").addEventListener("input", syncPreview);
+  document.getElementById("up-artist").addEventListener("input", syncPreview);
   document.getElementById("up-submit").addEventListener("click", submitUpload);
+  syncPreview();
 }
 
 async function submitUpload() {
-  const audioFile = document.getElementById("up-audio").files[0];
-  if (!audioFile) {
-    toast("Pick an audio file first.");
+  if (!upState.audioFile) {
+    toast("Drop an audio file first.");
     return;
   }
   const fd = new FormData();
-  fd.append("title", document.getElementById("up-title").value || audioFile.name);
-  fd.append("artist", document.getElementById("up-artist").value || "Unknown Artist");
-  fd.append("audio", audioFile);
-  const artFile = document.getElementById("up-artwork").files[0];
-  if (artFile) fd.append("artwork", artFile);
+  fd.append("title", document.getElementById("up-title").value.trim() || upState.audioFile.name);
+  fd.append("artist", document.getElementById("up-artist").value.trim() || "Unknown Artist");
+  fd.append("audio", upState.audioFile);
+  if (upState.artFile) fd.append("artwork", upState.artFile);
 
   const btn = document.getElementById("up-submit");
   btn.disabled = true;
@@ -733,56 +897,47 @@ async function submitUpload() {
     const res = await fetch(API_BASE + "/tracks/upload", { method: "POST", body: fd });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { track, job_id } = await res.json();
-    document.getElementById("upload-modal").classList.add("hidden");
-    document.getElementById("up-title").value = "";
-    document.getElementById("up-artist").value = "";
-    document.getElementById("up-audio").value = "";
-    document.getElementById("up-artwork").value = "";
     pollJob(job_id, track);
   } catch (err) {
     toast("Upload failed: " + err.message);
-  } finally {
     btn.disabled = false;
     btn.textContent = "Upload & analyze";
   }
 }
 
 async function pollJob(jobId, track) {
-  const panel = document.getElementById("job-panel");
-  const fill = document.getElementById("job-fill");
-  const stageEl = document.getElementById("job-stage");
-  document.getElementById("job-title").textContent = `Analyzing “${track.title}”`;
-  stageEl.textContent = "Queued";
-  fill.style.width = "0%";
-  panel.classList.remove("hidden");
-  document.getElementById("job-close").onclick = () => panel.classList.add("hidden");
+  document.getElementById("up-form").classList.add("hidden");
+  document.getElementById("up-progress").classList.remove("hidden");
+  renderPipeStages();
+  const fill = document.getElementById("up-prog-fill");
+  const sub = document.getElementById("up-prog-sub");
 
   while (true) {
     try {
       const job = await apiGet(`/tracks/jobs/${jobId}`);
-      stageEl.textContent = job.stage || job.state;
       fill.style.width = `${job.progress || 0}%`;
       if (job.state === "done") {
-        stageEl.textContent = "Done";
-        fill.style.width = "100%";
+        markPipeStages("", true);
+        sub.textContent = "Measurements locked. Opening your track…";
         state.tracks = await loadTracks();
         await renderLibrary();
-        setTimeout(() => panel.classList.add("hidden"), 1200);
+        await sleep(900);
+        document.getElementById("upload-modal").classList.add("hidden");
         openDetail(track.id);
         return;
       }
       if (job.state === "failed") {
-        toast("Analysis failed: " + (job.error || "unknown error"));
-        panel.classList.add("hidden");
+        sub.textContent = "Analysis failed: " + (job.error || "unknown error");
         return;
       }
+      sub.textContent = job.stage || job.state;
+      markPipeStages(job.stage || "", false);
     } catch {
       /* transient — keep polling */
     }
     await sleep(1500);
   }
 }
-
 /* ------------------------------------------------------------------ */
 /* Boot                                                              */
 /* ------------------------------------------------------------------ */
@@ -792,9 +947,6 @@ document.querySelectorAll(".nav-link").forEach((b) => {
     if (b.dataset.nav === "library") showView("library");
     else openDetail(state.lastTrackId || DEMO_TRACK.id);
   });
-});
-window.addEventListener("resize", () => {
-  if (state.detail) drawHeroWave();
 });
 
 (async function init() {
