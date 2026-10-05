@@ -439,11 +439,66 @@ async function openDetail(trackId) {
   state.lastTrackId = trackId;
   const track = state.tracks.find((t) => t.id === trackId) || DEMO_TRACK;
   const telemetry = await loadAnalysis(trackId);
+  // Prefer the real uploaded recording when the API can serve it;
+  // otherwise fall back to the synthesized stand-in.
+  let audioUrl = null;
+  if (apiLive && telemetry) {
+    try {
+      const r = await fetch(`${API_BASE}/tracks/${trackId}/audio`, { method: "HEAD" });
+      if (r.ok) audioUrl = `${API_BASE}/tracks/${trackId}/audio`;
+    } catch {
+      /* fall through to synth */
+    }
+  }
   showView("detail");
-  renderDetail(track, telemetry);
+  renderDetail(track, telemetry, audioUrl);
 }
 
-function renderDetail(track, telemetry) {
+/* Plays the actual uploaded recording, synced to measured telemetry.
+   Same interface as SynthEngine so the detail view works unchanged. */
+class RealAudioEngine {
+  constructor(url, telemetry) {
+    this.el = new Audio(url);
+    this.telemetry = telemetry;
+    this._lastChord = null;
+    this.el.preload = "auto";
+    this.el.addEventListener("ended", () => this.onended && this.onended());
+  }
+  get playing() {
+    return !this.el.paused;
+  }
+  play() {
+    return this.el.play();
+  }
+  pause() {
+    this.el.pause();
+  }
+  seek(t) {
+    this.el.currentTime = Math.max(0, Math.min(t, this.telemetry.duration || t));
+  }
+  getTime() {
+    this._syncChord();
+    return this.el.currentTime;
+  }
+  setDeck() {
+    /* no-op: the recording is the full mix; stems come with separation */
+  }
+  _syncChord() {
+    const t = this.el.currentTime;
+    const tl = this.telemetry.chord_timeline || [];
+    let chord = null;
+    if (tl.length) {
+      const ev = tl.find((e) => t >= e.start && t < e.end);
+      chord = ev ? ev.chord : null;
+    }
+    if (chord !== this._lastChord) {
+      this._lastChord = chord;
+      if (this.onchord) this.onchord(chord);
+    }
+  }
+}
+
+function renderDetail(track, telemetry, audioUrl) {
   const host = document.getElementById("detail-content");
   const { h1, h2 } = coverHues(track.id);
 
@@ -487,15 +542,19 @@ function renderDetail(track, telemetry) {
       <div class="transport">
         <button class="big-play" id="play-btn" aria-label="Play">▶</button>
         <div class="time-read"><b id="t-cur">0:00</b> / <span id="t-dur">${fmtTime(telemetry.duration)}</span></div>
-        <div class="deck-toggle" role="tablist" aria-label="Deck">
-          <button id="deck-a" class="active">Deck A · Full mix</button>
-          <button id="deck-b">Deck B · Stripped</button>
-        </div>
+        ${audioUrl
+          ? `<span class="chip">full recording</span>`
+          : `<div class="deck-toggle" role="tablist" aria-label="Deck">
+              <button id="deck-a" class="active">Deck A · Full mix</button>
+              <button id="deck-b">Deck B · Stripped</button>
+            </div>`}
       </div>
       <div id="wave-wrap"><canvas id="wave"></canvas></div>
       <div class="seg-legend" id="seg-legend"></div>
       <div class="chord-strip" id="chord-strip"></div>
-      <p class="player-note">Audio is synthesized live from the track's measured chords &amp; tempo — a stand-in until the ingestion pipeline ships real stems. Click the waveform or any lyric line to seek.</p>
+      <p class="player-note">${audioUrl
+        ? "Playing your uploaded recording — waveform, chords, and lyrics stay synced to its measured telemetry."
+        : "Audio is synthesized live from the track's measured chords &amp; tempo — a stand-in until the ingestion pipeline ships real stems."} Click the waveform or any lyric line to seek.</p>
     </div>
 
     <div class="detail-grid">
@@ -577,13 +636,14 @@ function renderDetail(track, telemetry) {
     return s;
   });
 
-  // Engine
-  const engine = new SynthEngine({
-    bpm: telemetry.bpm,
-    chords: telemetry.chords,
-    duration: telemetry.duration,
-  });
-  const barLen = engine.barLen;
+  // Engine — real recording when available, synth stand-in otherwise.
+  const engine = audioUrl
+    ? new RealAudioEngine(audioUrl, telemetry)
+    : new SynthEngine({
+        bpm: telemetry.bpm,
+        chords: telemetry.chords,
+        duration: telemetry.duration,
+      });
   engine.onchord = (chord) => {
     const idx = telemetry.chords.indexOf(chord);
     chordChips.forEach((el, i) => el.classList.toggle("active", i === idx));
@@ -619,7 +679,10 @@ function renderDetail(track, telemetry) {
         engine.pause();
         playBtn.textContent = "▶";
       } else {
-        engine.play();
+        const p = engine.play();
+        if (p && typeof p.catch === "function") {
+          p.catch((err) => toast("Audio couldn't start: " + err.message));
+        }
         playBtn.textContent = "⏸";
       }
     } catch (err) {
@@ -627,8 +690,12 @@ function renderDetail(track, telemetry) {
     }
   });
 
-  host.querySelector("#deck-a").addEventListener("click", (e) => setDeck("A", e));
-  host.querySelector("#deck-b").addEventListener("click", (e) => setDeck("B", e));
+  const deckA = host.querySelector("#deck-a");
+  const deckB = host.querySelector("#deck-b");
+  if (deckA && deckB) {
+    deckA.addEventListener("click", (e) => setDeck("A", e));
+    deckB.addEventListener("click", (e) => setDeck("B", e));
+  }
   function setDeck(d, e) {
     engine.setDeck(d);
     host.querySelector("#deck-a").classList.toggle("active", d === "A");
