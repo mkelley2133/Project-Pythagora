@@ -122,7 +122,12 @@
       <span id="footer-mode">demo telemetry</span>
     </footer>
 
-    <script>window.PYTHAGORAS_API_BASE = window.PYTHAGORAS_API_BASE || 'http://127.0.0.1:8000';</script>
+    <script>
+      // Same-origin by default: when the API serves this page (localhost or a
+      // Codespaces forwarded URL), the API is right here. Override by setting
+      // window.PYTHAGORAS_API_BASE before this script if the API lives elsewhere.
+      window.PYTHAGORAS_API_BASE = window.PYTHAGORAS_API_BASE || window.location.origin;
+    </script>
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>
