@@ -122,7 +122,7 @@ def get_artwork(track_id: str):
     return FileResponse(path)
 
 
-@router.get("/{track_id}/audio")
+@router.api_route("/{track_id}/audio", methods=["GET", "HEAD"])
 def get_audio(track_id: str):
     """Serve the track's audio file (uploaded originals; 404 for demo/seeded)."""
     track = store.get_track(track_id)

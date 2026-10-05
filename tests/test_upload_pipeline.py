@@ -182,3 +182,17 @@ def test_transcribe_unavailable_without_faster_whisper():
         available_expected = False
     result = transcribe("/tmp/waytoolong.wav")
     assert result["available"] == available_expected
+
+
+def test_audio_head_probe_used_by_player():
+    """The frontend probes audio availability with HEAD; it must not 404."""
+    wav = _synth_wav(seconds=4)
+    r = client.post(
+        "/tracks/upload",
+        data={"title": "Head Test", "artist": "Test Bot"},
+        files={"audio": ("h.wav", wav, "audio/wav")},
+    )
+    track_id, job_id = r.json()["track"]["id"], r.json()["job_id"]
+    _wait_job(job_id)
+    h = client.head(f"/tracks/{track_id}/audio")
+    assert h.status_code == 200, "HEAD probe failed — player falls back to synth"
