@@ -1,4 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Env & secrets — never commit real credentials
+.env
+.env.local
+
+# OS / editor / Office lock files
 *~
 *.tmp
 *.temp
-
+~$*
+.DS_Store

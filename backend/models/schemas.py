@@ -21,6 +21,17 @@ class TelemetryBundle(BaseModel):
     musicological_essay: str = Field(default="")
 
 
+class TrackCreate(BaseModel):
+    """Client-supplied fields for registering a new track.
+
+    The server assigns `id` and `created_at` — clients cannot spoof them.
+    """
+
+    title: str = Field(..., min_length=1)
+    artist: str = Field(..., min_length=1)
+    original_file_path: str = Field(..., min_length=1)
+
+
 class TrackRecord(BaseModel):
     id: str
     title: str
