@@ -24,6 +24,9 @@ def test_track_analysis_endpoint() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["telemetry_json"]["bpm"] == 92.4
+    assert payload["telemetry_json"]["duration"] > 0
+    assert len(payload["telemetry_json"]["segments"]) == 5
+    assert len(payload["telemetry_json"]["timestamped_lyrics"]) == 14
 
 
 def test_track_analysis_404_for_unknown_track() -> None:

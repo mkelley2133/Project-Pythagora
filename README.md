@@ -41,7 +41,9 @@ backend/
 workers/        Celery background tasks (audio analysis pipeline)
 training/       Model training pipeline configuration
 tests/          pytest suite
-frontend/       Starter dashboard shell (vanilla JS)
+frontend/       Dashboard: library carousels, dual-deck player, structural
+              waveform timeline, time-synced lyrics (vanilla JS + Web Audio;
+              demo audio is synthesized live from measured telemetry)
 ```
 
 ## Quickstart

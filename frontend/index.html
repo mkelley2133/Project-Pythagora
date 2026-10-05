@@ -3,10 +3,70 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Project Pythagoras</title>
+    <title>Project Pythagoras — Deep Musicology</title>
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main id="app"></main>
+    <div id="bg-glow" aria-hidden="true"></div>
+
+    <header id="topbar">
+      <div class="brand">
+        <div class="brand-mark">π</div>
+        <div class="brand-text">
+          <span class="brand-name">PYTHAGORAS</span>
+          <span class="brand-sub">deep musicology engine</span>
+        </div>
+      </div>
+      <nav class="topnav">
+        <button class="nav-link active" data-nav="library">Library</button>
+        <button class="nav-link" data-nav="detail-demo">Now Playing</button>
+      </nav>
+      <div id="api-status" class="api-status" title="Backend connection">
+        <span class="dot"></span><span class="label">connecting…</span>
+      </div>
+    </header>
+
+    <main id="app">
+      <!-- Library view -->
+      <section id="view-library" class="view">
+        <div class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Zero-hallucination music analysis</p>
+            <h1>Every note, <em>measured</em>.<br />Every story, <em>grounded</em>.</h1>
+            <p class="lede">
+              Deterministic signal processing locks down the telemetry first —
+              key, tempo, structure, rhyme — and only then does the narrative
+              begin. No guesses. No vibes-as-facts.
+            </p>
+            <div class="hero-stats">
+              <div class="stat"><span class="stat-num" id="stat-tracks">–</span><span class="stat-label">tracks</span></div>
+              <div class="stat"><span class="stat-num" id="stat-analyses">–</span><span class="stat-label">analyses</span></div>
+              <div class="stat"><span class="stat-num">0</span><span class="stat-label">hallucinations</span></div>
+            </div>
+          </div>
+          <div class="hero-visual" aria-hidden="true">
+            <canvas id="hero-wave" width="520" height="220"></canvas>
+          </div>
+        </div>
+
+        <div id="carousels"></div>
+      </section>
+
+      <!-- Track detail view -->
+      <section id="view-detail" class="view hidden">
+        <button id="back-btn" class="ghost-btn">← Library</button>
+        <div id="detail-content"></div>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+    </main>
+
+    <footer id="footer">
+      <span>Project Pythagoras · deterministic musicology</span>
+      <span id="footer-mode">demo telemetry</span>
+    </footer>
+
+    <script>window.PYTHAGORAS_API_BASE = window.PYTHAGORAS_API_BASE || 'http://127.0.0.1:8000';</script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
