@@ -102,3 +102,29 @@ Run the tests with `pytest`.
 - SQLAlchemy models replacing the in-memory track store
 - Constrained-essay generation stage (telemetry-locked prompting)
 - Dashboard: carousels, dual player, waveform timeline, synced lyric viewer
+
+## Live demo (GitHub Pages, free)
+
+The dashboard is a static site, so it deploys to GitHub Pages for free from
+the `gh-pages` branch (which mirrors `frontend/` at the branch root).
+
+One-time setup:
+
+1. Open the repo on GitHub → **Settings** → **Pages**.
+2. Under **Build and deployment**, set **Source** to **Deploy from a branch**.
+3. Select branch **gh-pages** and folder **/ (root)**, then **Save**.
+4. The site goes live at `https://<your-username>.github.io/Project-Pythagora/`
+   within a minute or two.
+
+To update the live site later, push fresh copies of the `frontend/` files to
+the `gh-pages` branch.
+
+Note: Pages hosts static files only, so the FastAPI backend doesn't run
+there. The dashboard detects this and runs in **demo mode** — the full
+interactive UI works, with audio synthesized live from the demo track's
+telemetry. To go fully live later, host the API somewhere (e.g. Render's free
+tier) and point the page at it with:
+
+```html
+<script>window.PYTHAGORAS_API_BASE = 'https://your-api-host';</script>
+```
