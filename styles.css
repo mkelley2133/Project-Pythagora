@@ -408,3 +408,22 @@ body {
   0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.45); }
   50% { box-shadow: 0 0 0 6px rgba(229, 72, 77, 0); }
 }
+
+/* ---------- Analyzing indicator ---------- */
+.analyzing-pill {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 700; color: var(--amber);
+  padding: 7px 14px; border: 1px solid rgba(245, 181, 68, 0.45);
+  border-radius: 99px; background: rgba(245, 181, 68, 0.08);
+  white-space: nowrap;
+}
+.analyzing-pill.hidden { display: none; }
+.analyzing-pill .spinner {
+  width: 12px; height: 12px; border-radius: 50%; flex: none;
+  border: 2px solid rgba(245, 181, 68, 0.3); border-top-color: var(--amber);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.pipe-error { color: var(--accent); font-weight: 800; }
+#up-prog-sub { line-height: 1.6; }
