@@ -249,3 +249,80 @@ body {
   display: flex; justify-content: space-between; font-size: 12.5px; color: var(--faint);
   border-top: 1px solid var(--border);
 }
+
+/* ---------- Netflix-style billboard ---------- */
+#billboard { margin: 26px 0 6px; }
+.billboard {
+  position: relative; border-radius: 20px; overflow: hidden;
+  border: 1px solid var(--border); min-height: 340px;
+  display: flex; align-items: flex-end;
+  background: linear-gradient(135deg, hsl(var(--h1, 350), 55%, 22%), hsl(var(--h2, 40), 60%, 10%));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+.billboard-empty { min-height: 220px; align-items: center; }
+.billboard-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.billboard-shade {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(10,10,16,0.12) 0%, rgba(10,10,16,0.55) 55%, rgba(10,10,16,0.93) 100%);
+}
+.billboard-copy { position: relative; padding: 34px 36px; max-width: 660px; }
+.billboard-copy h1 { font-size: 44px; margin: 0 0 6px; letter-spacing: -1px; font-weight: 800; }
+.billboard-copy h1 em { font-style: normal; color: var(--accent); }
+.billboard-copy .artist { color: var(--muted); margin: 0 0 14px; font-size: 16px; }
+.billboard-copy .lede { color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 52ch; margin: 0; }
+.billboard-actions { display: flex; gap: 12px; margin-top: 20px; align-items: center; }
+.billboard-actions .ghost-btn { margin: 0; }
+
+/* ---------- Buttons ---------- */
+.cta-btn {
+  background: linear-gradient(135deg, var(--accent), #a32428); color: #fff;
+  border: none; padding: 10px 20px; border-radius: 10px;
+  font-weight: 700; font-size: 14px; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(229, 72, 77, 0.4); transition: transform 0.15s;
+  white-space: nowrap;
+}
+.cta-btn:hover { transform: translateY(-1px); }
+.cta-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+/* ---------- Artwork ---------- */
+.cover-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* ---------- Upload modal ---------- */
+.modal {
+  position: fixed; inset: 0; z-index: 60; padding: 20px;
+  background: rgba(5, 5, 10, 0.72); backdrop-filter: blur(6px);
+  display: grid; place-items: center;
+}
+.modal.hidden { display: none; }
+.modal-card {
+  width: 100%; max-width: 440px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 18px;
+  padding: 26px 28px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+.modal-card h2 { margin: 0 0 4px; font-size: 20px; font-weight: 750; }
+.modal-card .panel-sub { margin: 0; font-size: 13px; color: var(--faint); }
+.modal-card label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin: 14px 0 0; }
+.modal-card input[type="text"] {
+  width: 100%; margin-top: 6px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); padding: 10px 12px; font-size: 14px;
+}
+.modal-card input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.modal-card input[type="file"] { margin-top: 6px; font-size: 13px; color: var(--muted); width: 100%; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.modal-actions .ghost-btn { margin: 0; }
+
+/* ---------- Job progress panel ---------- */
+.job-panel {
+  position: fixed; bottom: 26px; right: 26px; z-index: 55; width: 330px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px 18px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.6);
+}
+.job-panel.hidden { display: none; }
+.job-info { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; padding-right: 26px; }
+.job-info b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-info span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.job-bar { height: 8px; border-radius: 99px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
+#job-fill { height: 100%; width: 0%; border-radius: 99px; background: linear-gradient(90deg, var(--violet), var(--accent)); transition: width 0.5s ease; }
+#job-close { position: absolute; top: 6px; right: 8px; margin: 0; padding: 4px 10px; font-size: 16px; line-height: 1; }

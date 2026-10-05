@@ -150,6 +150,7 @@ async function loadAnalysis(trackId) {
 /* ------------------------------------------------------------------ */
 const state = {
   tracks: [],
+  telemetry: {}, // trackId -> TelemetryBundle
   detail: null, // { track, telemetry, engine, peaks, raf, activeLyric }
   lastTrackId: null,
 };
@@ -159,10 +160,13 @@ const state = {
 /* ------------------------------------------------------------------ */
 function trackCard(track) {
   const { h1, h2 } = coverHues(track.id);
+  const tel = state.telemetry[track.id];
+  const art = artworkUrl(track);
   const card = document.createElement("div");
   card.className = "track-card";
   card.innerHTML = `
     <div class="cover" style="--h1:${h1};--h2:${h2}">
+      ${art ? `<img class="cover-img" src="${art}" alt="" loading="lazy" onerror="this.remove()">` : ""}
       <span class="cover-glyph">♪</span>
       <div class="play-hover"><button class="pp" aria-label="Open">▶</button></div>
     </div>
@@ -170,8 +174,11 @@ function trackCard(track) {
       <h3>${esc(track.title)}</h3>
       <p class="artist">${esc(track.artist)}</p>
       <div class="chip-row">
-        <span class="chip hot">${esc(DEMO_TELEMETRY.bpm)} BPM</span>
-        <span class="chip">${esc(DEMO_TELEMETRY.musical_key)} ${esc(DEMO_TELEMETRY.mode)}</span>
+        ${
+          tel
+            ? `<span class="chip hot">${tel.bpm} BPM</span><span class="chip">${esc(tel.musical_key)} ${esc(tel.mode)}</span>`
+            : `<span class="chip">analysis pending</span>`
+        }
       </div>
     </div>`;
   card.addEventListener("click", () => openDetail(track.id));
@@ -184,53 +191,162 @@ function moodOf(telemetry) {
   return entries.sort((a, b) => b[1] - a[1])[0][0];
 }
 
+function artworkUrl(track) {
+  // Cover art only exists when the API is live; otherwise the gradient cover shows.
+  return apiLive ? `${API_BASE}/tracks/${track.id}/artwork` : null;
+}
+
+function energyOf(telemetry) {
+  if (!telemetry) return null;
+  const p = telemetry.emotional_profile || {};
+  const nums = [p.arousal, p.energy].filter((v) => typeof v === "number");
+  if (nums.length) return Math.max(...nums);
+  const m = moodOf(telemetry).toLowerCase();
+  if (/upbeat|intense|euphoric|aggressive/.test(m)) return 0.8;
+  if (/mellow|dark|brooding|reflective/.test(m)) return 0.25;
+  return 0.5;
+}
+
+function featuredTrack() {
+  const withTel = state.tracks.filter((t) => state.telemetry[t.id]);
+  if (withTel.length) {
+    return withTel.sort(
+      (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    )[0];
+  }
+  return state.tracks[0] || null;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function makeRow(title, sub, list) {
+  const block = document.createElement("div");
+  block.className = "carousel-block";
+  block.innerHTML = `<div class="carousel-head"><h2>${esc(title)}</h2><span>${esc(sub)}</span></div>`;
+  const car = document.createElement("div");
+  car.className = "carousel";
+  if (!list.length) {
+    car.innerHTML = `<div class="empty-note">Nothing here yet.</div>`;
+  } else {
+    for (const t of list) car.appendChild(trackCard(t));
+  }
+  block.appendChild(car);
+  return block;
+}
+
+function renderBillboard() {
+  const host = document.getElementById("billboard");
+  const feat = featuredTrack();
+  if (!feat) {
+    host.innerHTML = `
+      <div class="billboard billboard-empty">
+        <div class="billboard-copy">
+          <p class="eyebrow">Zero-hallucination music analysis</p>
+          <h1>Every note, <em>measured</em>.</h1>
+          <p class="lede">Upload a track to lock down its telemetry — key, tempo, structure, rhyme — before any story is told.</p>
+        </div>
+      </div>`;
+    return;
+  }
+  const tel = state.telemetry[feat.id];
+  const { h1, h2 } = coverHues(feat.id);
+  const art = artworkUrl(feat);
+  const mood = tel ? moodOf(tel) : "—";
+  host.innerHTML = `
+    <div class="billboard" style="--h1:${h1};--h2:${h2}">
+      ${art ? `<img class="billboard-art" src="${art}" alt="" onerror="this.remove()">` : ""}
+      <div class="billboard-shade"></div>
+      <div class="billboard-copy">
+        <p class="eyebrow">Featured analysis · ${esc(mood)}</p>
+        <h1>${esc(feat.title)}</h1>
+        <p class="artist">${esc(feat.artist)}</p>
+        <div class="chip-row">
+          ${
+            tel
+              ? `<span class="chip hot">${tel.bpm} BPM</span>
+                 <span class="chip">${esc(tel.musical_key)} ${esc(tel.mode)}</span>
+                 <span class="chip">${esc(tel.rhyme_scheme_summary || "—")} rhyme</span>
+                 <span class="chip">${tel.segments ? tel.segments.length : 0} sections</span>`
+              : `<span class="chip">analysis pending</span>`
+          }
+        </div>
+        <div class="billboard-actions">
+          <button class="cta-btn" id="bb-play">▶ Play</button>
+          <button class="ghost-btn" id="bb-info">More info</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("bb-play").addEventListener("click", () => openDetail(feat.id));
+  document.getElementById("bb-info").addEventListener("click", () => openDetail(feat.id));
+}
+
 async function renderLibrary() {
   const carousels = document.getElementById("carousels");
   carousels.innerHTML = "";
-  document.getElementById("stat-tracks").textContent = state.tracks.length;
 
+  // Load telemetry for every track (parallel) so rows can classify by mood/energy.
+  state.telemetry = {};
   let analyses = 0;
-  try {
-    if (state.tracks.some((t) => t.id === DEMO_TRACK.id)) {
-      const tel = await loadAnalysis(DEMO_TRACK.id);
-      if (tel) analyses++;
-      state.tracks._telemetry = { [DEMO_TRACK.id]: tel };
-    }
-  } catch { /* ignore */ }
-  document.getElementById("stat-analyses").textContent = analyses;
+  await Promise.all(
+    state.tracks.map(async (t) => {
+      const tel = await loadAnalysis(t.id);
+      if (tel) {
+        state.telemetry[t.id] = tel;
+        analyses++;
+      }
+    })
+  );
 
-  const libBlock = document.createElement("div");
-  libBlock.className = "carousel-block";
-  libBlock.innerHTML = `<div class="carousel-head"><h2>Your library</h2><span>${state.tracks.length} track${state.tracks.length === 1 ? "" : "s"}</span></div>`;
-  const libCar = document.createElement("div");
-  libCar.className = "carousel";
-  if (!state.tracks.length) {
-    libCar.innerHTML = `<div class="empty-note">No tracks yet. Register one via <code>POST /tracks</code>.</div>`;
-  } else {
-    for (const t of state.tracks) libCar.appendChild(trackCard(t));
-  }
-  libBlock.appendChild(libCar);
-  carousels.appendChild(libBlock);
+  renderBillboard();
+
+  const energy = (t) => energyOf(state.telemetry[t.id]);
+  const recent = [...state.tracks].sort(
+    (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+  );
+
+  carousels.appendChild(
+    makeRow("Your library", `${state.tracks.length} track${state.tracks.length === 1 ? "" : "s"}`, state.tracks)
+  );
+  const high = state.tracks.filter((t) => (energy(t) ?? 0) >= 0.6);
+  if (high.length) carousels.appendChild(makeRow("High energy", "arousal ≥ 60%", high));
+  const chill = state.tracks.filter((t) => {
+    const e = energy(t);
+    return e !== null && e < 0.4;
+  });
+  if (chill.length) carousels.appendChild(makeRow("Chill & mellow", "low arousal", chill));
+  if (recent.length > 1) carousels.appendChild(makeRow("Recently added", "latest first", recent.slice(0, 10)));
 
   // Browse by mood — groups tracks under their dominant measured emotion.
-  const moodBlock = document.createElement("div");
-  moodBlock.className = "carousel-block";
-  const tel = (state.tracks._telemetry || {})[DEMO_TRACK.id];
-  const mood = tel ? moodOf(tel) : "—";
-  moodBlock.innerHTML = `<div class="carousel-head"><h2>Browse by mood</h2><span>dominant emotion per track</span></div>`;
-  const moodCar = document.createElement("div");
-  moodCar.className = "carousel";
+  const byMood = {};
   for (const t of state.tracks) {
-    const wrap = document.createElement("div");
-    wrap.style.minWidth = "220px";
-    wrap.innerHTML = `<div class="chip" style="margin-bottom:8px;display:inline-block">${esc(mood)}</div>`;
-    wrap.appendChild(trackCard(t));
-    moodCar.appendChild(wrap);
+    const m = state.telemetry[t.id] ? moodOf(state.telemetry[t.id]) : "unclassified";
+    (byMood[m] = byMood[m] || []).push(t);
   }
-  moodBlock.appendChild(moodCar);
-  carousels.appendChild(moodBlock);
-
-  drawHeroWave();
+  const moodNames = Object.keys(byMood).sort();
+  if (moodNames.length) {
+    const block = document.createElement("div");
+    block.className = "carousel-block";
+    block.innerHTML = `<div class="carousel-head"><h2>Browse by mood</h2><span>dominant measured emotion per track</span></div>`;
+    const car = document.createElement("div");
+    car.className = "carousel";
+    for (const m of moodNames) {
+      const wrap = document.createElement("div");
+      wrap.style.minWidth = "220px";
+      wrap.innerHTML = `<div class="chip" style="margin-bottom:8px;display:inline-block">${esc(m)}</div>`;
+      wrap.appendChild(trackCard(byMood[m][0]));
+      car.appendChild(wrap);
+      for (const t of byMood[m].slice(1)) {
+        const w2 = document.createElement("div");
+        w2.style.minWidth = "220px";
+        w2.appendChild(trackCard(t));
+        car.appendChild(w2);
+      }
+    }
+    block.appendChild(car);
+    carousels.appendChild(block);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -357,9 +473,10 @@ function renderDetail(track, telemetry) {
   const { h1, h2 } = coverHues(track.id);
 
   if (!telemetry) {
+    const art0 = artworkUrl(track);
     host.innerHTML = `
       <div class="detail-head">
-        <div class="detail-cover" style="--h1:${h1};--h2:${h2}"><span class="cover-glyph">♪</span></div>
+        <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${art0 ? `<img class="cover-img" src="${art0}" alt="" onerror="this.remove()">` : ""}<span class="cover-glyph">♪</span></div>
         <div><h1>${esc(track.title)}</h1><p class="artist">${esc(track.artist)}</p></div>
       </div>
       <div class="panel"><h2>Analysis pending</h2>
@@ -376,7 +493,7 @@ function renderDetail(track, telemetry) {
 
   host.innerHTML = `
     <div class="detail-head">
-      <div class="detail-cover" style="--h1:${h1};--h2:${h2}"><span class="cover-glyph">♪</span></div>
+      <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${artworkUrl(track) ? `<img class="cover-img" src="${artworkUrl(track)}" alt="" onerror="this.remove()">` : ""}<span class="cover-glyph">♪</span></div>
       <div>
         <h1>${esc(track.title)}</h1>
         <p class="artist">${esc(track.artist)}</p>
@@ -578,6 +695,95 @@ function renderDetail(track, telemetry) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Upload + job tracking                                              */
+/* ------------------------------------------------------------------ */
+function wireUpload() {
+  const modal = document.getElementById("upload-modal");
+  document.getElementById("upload-btn").addEventListener("click", () => {
+    if (!apiLive) {
+      toast("Upload needs the API — run it locally to ingest tracks.");
+      return;
+    }
+    modal.classList.remove("hidden");
+  });
+  document.getElementById("up-cancel").addEventListener("click", () => modal.classList.add("hidden"));
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.classList.add("hidden");
+  });
+  document.getElementById("up-submit").addEventListener("click", submitUpload);
+}
+
+async function submitUpload() {
+  const audioFile = document.getElementById("up-audio").files[0];
+  if (!audioFile) {
+    toast("Pick an audio file first.");
+    return;
+  }
+  const fd = new FormData();
+  fd.append("title", document.getElementById("up-title").value || audioFile.name);
+  fd.append("artist", document.getElementById("up-artist").value || "Unknown Artist");
+  fd.append("audio", audioFile);
+  const artFile = document.getElementById("up-artwork").files[0];
+  if (artFile) fd.append("artwork", artFile);
+
+  const btn = document.getElementById("up-submit");
+  btn.disabled = true;
+  btn.textContent = "Uploading…";
+  try {
+    const res = await fetch(API_BASE + "/tracks/upload", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { track, job_id } = await res.json();
+    document.getElementById("upload-modal").classList.add("hidden");
+    document.getElementById("up-title").value = "";
+    document.getElementById("up-artist").value = "";
+    document.getElementById("up-audio").value = "";
+    document.getElementById("up-artwork").value = "";
+    pollJob(job_id, track);
+  } catch (err) {
+    toast("Upload failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Upload & analyze";
+  }
+}
+
+async function pollJob(jobId, track) {
+  const panel = document.getElementById("job-panel");
+  const fill = document.getElementById("job-fill");
+  const stageEl = document.getElementById("job-stage");
+  document.getElementById("job-title").textContent = `Analyzing “${track.title}”`;
+  stageEl.textContent = "Queued";
+  fill.style.width = "0%";
+  panel.classList.remove("hidden");
+  document.getElementById("job-close").onclick = () => panel.classList.add("hidden");
+
+  while (true) {
+    try {
+      const job = await apiGet(`/tracks/jobs/${jobId}`);
+      stageEl.textContent = job.stage || job.state;
+      fill.style.width = `${job.progress || 0}%`;
+      if (job.state === "done") {
+        stageEl.textContent = "Done";
+        fill.style.width = "100%";
+        state.tracks = await loadTracks();
+        await renderLibrary();
+        setTimeout(() => panel.classList.add("hidden"), 1200);
+        openDetail(track.id);
+        return;
+      }
+      if (job.state === "failed") {
+        toast("Analysis failed: " + (job.error || "unknown error"));
+        panel.classList.add("hidden");
+        return;
+      }
+    } catch {
+      /* transient — keep polling */
+    }
+    await sleep(1500);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Boot                                                              */
 /* ------------------------------------------------------------------ */
 document.getElementById("back-btn").addEventListener("click", () => showView("library"));
@@ -593,6 +799,7 @@ window.addEventListener("resize", () => {
 
 (async function init() {
   await checkApi();
+  wireUpload();
   state.tracks = await loadTracks();
   await renderLibrary();
 })();

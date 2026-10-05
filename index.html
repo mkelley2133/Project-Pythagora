@@ -21,6 +21,7 @@
         <button class="nav-link active" data-nav="library">Library</button>
         <button class="nav-link" data-nav="detail-demo">Now Playing</button>
       </nav>
+      <button id="upload-btn" class="cta-btn">Upload</button>
       <div id="api-status" class="api-status" title="Backend connection">
         <span class="dot"></span><span class="label">connecting…</span>
       </div>
@@ -29,25 +30,7 @@
     <main id="app">
       <!-- Library view -->
       <section id="view-library" class="view">
-        <div class="hero">
-          <div class="hero-copy">
-            <p class="eyebrow">Zero-hallucination music analysis</p>
-            <h1>Every note, <em>measured</em>.<br />Every story, <em>grounded</em>.</h1>
-            <p class="lede">
-              Deterministic signal processing locks down the telemetry first —
-              key, tempo, structure, rhyme — and only then does the narrative
-              begin. No guesses. No vibes-as-facts.
-            </p>
-            <div class="hero-stats">
-              <div class="stat"><span class="stat-num" id="stat-tracks">–</span><span class="stat-label">tracks</span></div>
-              <div class="stat"><span class="stat-num" id="stat-analyses">–</span><span class="stat-label">analyses</span></div>
-              <div class="stat"><span class="stat-num">0</span><span class="stat-label">hallucinations</span></div>
-            </div>
-          </div>
-          <div class="hero-visual" aria-hidden="true">
-            <canvas id="hero-wave" width="520" height="220"></canvas>
-          </div>
-        </div>
+        <div id="billboard"></div>
 
         <div id="carousels"></div>
       </section>
@@ -59,6 +42,29 @@
       </section>
 
       <div id="toast" class="toast hidden"></div>
+
+      <!-- Upload modal -->
+      <div id="upload-modal" class="modal hidden">
+        <div class="modal-card">
+          <h2>Upload a track</h2>
+          <p class="panel-sub">Audio goes straight into the analysis pipeline — tempo, key, chords, sections, waveform.</p>
+          <label>Title<input id="up-title" type="text" placeholder="Track title" /></label>
+          <label>Artist<input id="up-artist" type="text" placeholder="Artist" /></label>
+          <label>Audio file<input id="up-audio" type="file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aac" /></label>
+          <label>Cover art (optional)<input id="up-artwork" type="file" accept=".jpg,.jpeg,.png,.webp" /></label>
+          <div class="modal-actions">
+            <button id="up-cancel" class="ghost-btn">Cancel</button>
+            <button id="up-submit" class="cta-btn">Upload &amp; analyze</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Job progress -->
+      <div id="job-panel" class="job-panel hidden">
+        <button id="job-close" class="ghost-btn" aria-label="Dismiss">×</button>
+        <div class="job-info"><b id="job-title">Analyzing…</b><span id="job-stage">Queued</span></div>
+        <div class="job-bar"><div id="job-fill"></div></div>
+      </div>
     </main>
 
     <footer id="footer">
