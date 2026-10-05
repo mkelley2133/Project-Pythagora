@@ -37,3 +37,17 @@ def compute_waveform(audio_path: str, n_peaks: int = 600) -> list[float]:
     from workers.analysis.waveform import waveform_peaks
 
     return waveform_peaks(audio_path, n_peaks=n_peaks)
+
+
+@celery_app.task(name="workers.tasks.analyze_track", bind=True)
+def analyze_track(self, job_id: str, track_id: str, audio_path: str) -> dict:
+    """Full analysis pipeline as a Celery task (production path).
+
+    Runs the same run_pipeline() the API uses via BackgroundTasks. Note: in
+    a multi-process Celery deployment the in-memory job registry in
+    backend/jobs.py is per-process — back it with Redis before relying on
+    cross-process job status.
+    """
+    from workers.pipeline import run_pipeline
+
+    return run_pipeline(job_id, track_id, audio_path)

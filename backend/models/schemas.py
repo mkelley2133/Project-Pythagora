@@ -86,7 +86,19 @@ class TrackRecord(BaseModel):
     original_file_path: str
     vocal_stem_path: str | None = None
     instrumental_stem_path: str | None = None
+    artwork_path: str | None = Field(default=None, description="Uploaded cover art")
     created_at: datetime | None = None
+
+
+class JobStatus(BaseModel):
+    """Lifecycle of one analysis pipeline run."""
+
+    job_id: str
+    track_id: str
+    state: str = Field(description="queued | running | done | failed")
+    stage: str = ""
+    progress: int = Field(default=0, ge=0, le=100)
+    error: str | None = None
 
 
 class TrackAnalysisRecord(BaseModel):

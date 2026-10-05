@@ -18,3 +18,6 @@ venv/
 *.temp
 ~$*
 .DS_Store
+
+# Uploaded audio/artwork (local dev only)
+storage/

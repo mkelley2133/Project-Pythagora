@@ -84,6 +84,28 @@ API with `window.PYTHAGORAS_API_BASE` before `src/main.js` loads:
 | POST   | `/tracks`                 | Register a track (201, id assigned) |
 | GET    | `/tracks/{id}`            | Get one track                      |
 | GET    | `/tracks/{id}/analysis`   | Telemetry bundle for a track       |
+| POST   | `/tracks/upload`          | Upload audio (+ optional cover art), start analysis (202 + `job_id`) |
+| POST   | `/tracks/{id}/artwork`    | Upload/replace cover art           |
+| GET    | `/tracks/{id}/artwork`    | Serve cover art                    |
+| GET    | `/tracks/jobs/{job_id}`   | Job status: state / stage / progress 0-100 |
+
+**The upload loop:** `POST /tracks/upload` (multipart: `title`, `artist`, `audio`,
+optional `artwork`) saves files under `storage/`, returns immediately with a
+`job_id`, and runs the analysis pipeline in the background. Poll
+`GET /tracks/jobs/{job_id}` for live stage/progress — the dashboard shows a
+progress panel and opens the track when the job completes.
+
+The pipeline (`workers/pipeline.py`) runs every deterministic measurement in
+order — tempo, key, chords, sections/texture, waveform, vocal forensics,
+transcription (skipped cleanly when faster-whisper isn't installed) — then
+writes a `TelemetryBundle` plus a template-built, fully grounded summary essay.
+Vocal forensics refuses to report when the F0 track looks like bass (<80 Hz)
+rather than voice. The same pipeline is exposed as the Celery task
+`workers.tasks.analyze_track` for multi-worker deployments.
+
+The local analyzer is ported under `workers/analysis/`: `audio.py`
+(tempo/key/sections/texture/mood/style), `transcribe.py` (faster-whisper,
+optional), `lyrics.py` (themes, rhyme, figurative language).
 
 Run the tests with `pytest`.
 
