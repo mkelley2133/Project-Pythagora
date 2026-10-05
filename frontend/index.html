@@ -21,6 +21,8 @@
         <button class="nav-link active" data-nav="library">Library</button>
         <button class="nav-link" data-nav="detail-demo">Now Playing</button>
       </nav>
+      <button id="upload-btn" class="cta-btn">Upload</button>
+      <div id="analyzing-pill" class="analyzing-pill hidden"><span class="spinner"></span><span id="analyzing-label">Analyzing…</span></div>
       <div id="api-status" class="api-status" title="Backend connection">
         <span class="dot"></span><span class="label">connecting…</span>
       </div>
@@ -29,25 +31,7 @@
     <main id="app">
       <!-- Library view -->
       <section id="view-library" class="view">
-        <div class="hero">
-          <div class="hero-copy">
-            <p class="eyebrow">Zero-hallucination music analysis</p>
-            <h1>Every note, <em>measured</em>.<br />Every story, <em>grounded</em>.</h1>
-            <p class="lede">
-              Deterministic signal processing locks down the telemetry first —
-              key, tempo, structure, rhyme — and only then does the narrative
-              begin. No guesses. No vibes-as-facts.
-            </p>
-            <div class="hero-stats">
-              <div class="stat"><span class="stat-num" id="stat-tracks">–</span><span class="stat-label">tracks</span></div>
-              <div class="stat"><span class="stat-num" id="stat-analyses">–</span><span class="stat-label">analyses</span></div>
-              <div class="stat"><span class="stat-num">0</span><span class="stat-label">hallucinations</span></div>
-            </div>
-          </div>
-          <div class="hero-visual" aria-hidden="true">
-            <canvas id="hero-wave" width="520" height="220"></canvas>
-          </div>
-        </div>
+        <div id="billboard"></div>
 
         <div id="carousels"></div>
       </section>
@@ -59,6 +43,78 @@
       </section>
 
       <div id="toast" class="toast hidden"></div>
+
+      <!-- Upload modal -->
+      <div id="upload-modal" class="modal hidden">
+        <div class="modal-card up-card">
+          <button id="up-close" class="modal-x" aria-label="Close">×</button>
+
+          <div id="up-form">
+            <p class="eyebrow">Ingest</p>
+            <h2>Add to your library</h2>
+            <p class="panel-sub">Drop audio and artwork. The pipeline measures everything before any story is told.</p>
+            <div class="up-grid">
+              <div class="up-dropzones">
+                <div id="up-audio-dz" class="dropzone">
+                  <input id="up-audio" type="file" accept=".mp3,.wav,.ogg,.flac,.m4a,.aac" hidden />
+                  <div class="dz-idle" id="up-audio-idle">
+                    <div class="dz-icon">♪</div>
+                    <div><b>Drop audio here</b><span>or click to browse · mp3 wav ogg flac m4a</span></div>
+                  </div>
+                  <div class="dz-file hidden" id="up-audio-file">
+                    <canvas id="up-wave" width="300" height="64"></canvas>
+                    <div class="dz-file-meta">
+                      <b id="up-audio-name">—</b><span id="up-audio-sub">—</span>
+                    </div>
+                    <button id="up-audio-clear" class="dz-clear" aria-label="Remove audio">×</button>
+                  </div>
+                </div>
+                <div id="up-art-dz" class="dropzone dz-art">
+                  <input id="up-artwork" type="file" accept=".jpg,.jpeg,.png,.webp" hidden />
+                  <div class="dz-idle" id="up-art-idle">
+                    <div class="dz-icon">◈</div>
+                    <div><b>Cover art</b><span>optional · jpg png webp</span></div>
+                  </div>
+                  <img id="up-art-preview" class="dz-art-img hidden" alt="Cover art preview" />
+                  <button id="up-art-clear" class="dz-clear hidden" aria-label="Remove artwork">×</button>
+                </div>
+              </div>
+              <div class="up-meta">
+                <label>Title<input id="up-title" type="text" placeholder="Track title" autocomplete="off" /></label>
+                <label>Artist<input id="up-artist" type="text" placeholder="Artist" autocomplete="off" /></label>
+                <div class="up-preview-label">Library preview</div>
+                <div class="up-preview-card">
+                  <div class="cover" id="up-preview-cover" style="--h1:280;--h2:330"><span class="cover-glyph">♪</span></div>
+                  <div class="track-meta">
+                    <h3 id="up-preview-title">Untitled</h3>
+                    <p class="artist" id="up-preview-artist">Unknown Artist</p>
+                    <div class="chip-row"><span class="chip">analysis pending</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button id="up-cancel" class="ghost-btn">Cancel</button>
+              <button id="up-submit" class="cta-btn">Upload &amp; analyze</button>
+            </div>
+          </div>
+
+          <div id="up-progress" class="hidden">
+            <p class="eyebrow">Pipeline</p>
+            <h2 id="up-prog-title">Analyzing…</h2>
+            <p class="panel-sub" id="up-prog-sub">Deterministic measurements, in order. Nothing is guessed.</p>
+            <div class="pipe-bar"><div id="up-prog-fill"></div></div>
+            <ol id="up-stages" class="pipe-stages"></ol>
+          </div>
+        </div>
+      </div>
+
+      <!-- Job progress -->
+      <div id="job-panel" class="job-panel hidden">
+        <button id="job-close" class="ghost-btn" aria-label="Dismiss">×</button>
+        <div class="job-info"><b id="job-title">Analyzing…</b><span id="job-stage">Queued</span></div>
+        <div class="job-bar"><div id="job-fill"></div></div>
+      </div>
     </main>
 
     <footer id="footer">
