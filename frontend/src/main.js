@@ -501,7 +501,12 @@ function renderDetail(track, telemetry) {
     document.getElementById("play-btn").disabled = false;
   };
 
-  const peaks = makePeaks(track.id);
+  // Real measured peaks when the analysis pipeline has produced them;
+  // otherwise the deterministic seeded placeholder.
+  const peaks =
+    telemetry.waveform_peaks && telemetry.waveform_peaks.length
+      ? telemetry.waveform_peaks
+      : makePeaks(track.id);
   const wave = host.querySelector("#wave");
   const tCur = host.querySelector("#t-cur");
   const playBtn = host.querySelector("#play-btn");

@@ -26,6 +26,31 @@ class LyricLine(BaseModel):
     rhyme: str = Field(default="", description="Rhyme-scheme letter, e.g. A, B")
 
 
+class ChordEvent(BaseModel):
+    """One recognized chord with its position and Roman numeral."""
+
+    chord: str = Field(..., description="Chord symbol, e.g. Dm")
+    roman: str = Field(default="", description="Roman numeral relative to the track key")
+    start: float = Field(default=0.0, ge=0.0)
+    end: float = Field(default=0.0, ge=0.0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class VocalProfile(BaseModel):
+    """Measured vocal-production features.
+
+    autotune_likelihood is a heuristic (0-1), not a verdict — see
+    workers/analysis/vocals.py for its caveats.
+    """
+
+    f0_mean_hz: float = Field(default=0.0, ge=0.0)
+    f0_range_semitones: float = Field(default=0.0, ge=0.0)
+    vibrato_rate_hz: float = Field(default=0.0, ge=0.0)
+    vibrato_depth_cents: float = Field(default=0.0, ge=0.0)
+    autotune_likelihood: float = Field(default=0.0, ge=0.0, le=1.0)
+    voiced_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class TelemetryBundle(BaseModel):
     bpm: float = Field(..., ge=0.0)
     duration: float = Field(default=0.0, ge=0.0, description="Track length in seconds")
@@ -35,6 +60,9 @@ class TelemetryBundle(BaseModel):
     emotional_profile: dict[str, float] = Field(default_factory=dict)
     chords: list[str] = Field(default_factory=list)
     segments: list[StructuralSegment] = Field(default_factory=list)
+    chord_timeline: list[ChordEvent] = Field(default_factory=list)
+    vocal_profile: VocalProfile | None = Field(default=None)
+    waveform_peaks: list[float] = Field(default_factory=list)
     rhyme_scheme_summary: str = Field(default="")
     timestamped_lyrics: list[LyricLine] = Field(default_factory=list)
     musicological_essay: str = Field(default="")

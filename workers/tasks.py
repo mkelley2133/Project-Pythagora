@@ -13,3 +13,27 @@ celery_app = Celery(
 @celery_app.task(name="workers.tasks.healthcheck")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok", "service": "workers"}
+
+
+@celery_app.task(name="workers.tasks.analyze_chords")
+def analyze_chords(audio_path: str, key: str = "C", mode: str = "major") -> list[dict]:
+    """Run deterministic chord recognition on an audio file."""
+    from workers.analysis.chords import recognize_chords
+
+    return recognize_chords(audio_path, key=key, mode=mode)
+
+
+@celery_app.task(name="workers.tasks.analyze_vocals")
+def analyze_vocals(vocal_stem_path: str) -> dict:
+    """Run vocal production forensics on a vocal stem (or full mix)."""
+    from workers.analysis.vocals import analyze_vocals as _analyze
+
+    return _analyze(vocal_stem_path)
+
+
+@celery_app.task(name="workers.tasks.compute_waveform")
+def compute_waveform(audio_path: str, n_peaks: int = 600) -> list[float]:
+    """Compute the dashboard waveform peak envelope for an audio file."""
+    from workers.analysis.waveform import waveform_peaks
+
+    return waveform_peaks(audio_path, n_peaks=n_peaks)

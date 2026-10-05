@@ -38,7 +38,11 @@ backend/
   database.py   SQLAlchemy session manager (graceful fallback without it)
   models/       Pydantic schemas (track + telemetry bundles)
   routers/      API routes (/tracks, /tracks/{id}/analysis)
-workers/        Celery background tasks (audio analysis pipeline)
+workers/        Celery background tasks
+  tasks.py      healthcheck + analyze_chords / analyze_vocals / compute_waveform
+  analysis/     deterministic measurement: chroma chord recognition +
+                Roman numerals, vocal forensics (F0, vibrato, pitch-
+                correction heuristic), waveform peak envelopes
 training/       Model training pipeline configuration
 tests/          pytest suite
 frontend/       Dashboard: library carousels, dual-deck player, structural

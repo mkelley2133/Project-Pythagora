@@ -19,8 +19,14 @@ requests>=2.32
 # Tests
 pytest>=8.0
 
-# --- Heavy / optional: audio ML & musicology (install only when needed) ---
-# librosa>=0.10
+# Audio measurement workers (chord recognition, vocal forensics, waveform peaks)
+# Heavy: pulls numba/llvmlite/scipy. Install where the workers run.
+librosa>=0.10
+numpy>=1.26
+scipy>=1.13
+soundfile>=0.12
+
+# --- Heavy / optional: source separation, transcription, large models ---
 # torch>=2.4
 # faster-whisper>=1.0
 # music21>=9.1
