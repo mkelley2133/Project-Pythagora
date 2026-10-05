@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import math
+import os
+
+DEFAULT_MODEL = os.environ.get("PYTHAGORAS_WHISPER_MODEL", "large-v3")
 
 
 def confidence_of(avg_logprob: float, no_speech_prob: float) -> float:
@@ -24,16 +27,20 @@ def confidence_of(avg_logprob: float, no_speech_prob: float) -> float:
     return round(max(0.0, min(1.0, base * max(0.0, speech))), 3)
 
 
-def transcribe(path, model_name="base"):
+def transcribe(path, model_name=None, source="full mix"):
     """Transcribe audio to segments with word timestamps and confidence.
 
+    model_name defaults to PYTHAGORAS_WHISPER_MODEL or "large-v3".
     Returns {"available": False, ...} when faster-whisper isn't installed.
     """
+    model_name = model_name or DEFAULT_MODEL
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         return {
             "available": False,
+            "model": model_name,
+            "source": source,
             "error": (
                 "faster-whisper is not installed. Install it (`pip install faster-whisper`) "
                 "or paste lyrics manually on the song page — manual lyrics still sync live."
@@ -42,6 +49,7 @@ def transcribe(path, model_name="base"):
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, info = model.transcribe(path, word_timestamps=True)
     out = []
+    result = {"available": True, "model": model_name, "source": source, "lines": out}
     for seg in segments:
         words = []
         for w in seg.words or []:
@@ -58,4 +66,5 @@ def transcribe(path, model_name="base"):
                 ),
             }
         )
-    return {"available": True, "language": info.language, "lines": out}
+    result["language"] = info.language
+    return result

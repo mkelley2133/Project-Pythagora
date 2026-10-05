@@ -28,6 +28,7 @@ from workers.analysis import audio as audio_mod
 from workers.analysis.chords import recognize_chords
 from workers.analysis.lyrics import rhyme_scheme
 from workers.analysis.transcribe import transcribe
+from workers.analysis.separate import separate_vocals
 from workers.analysis.vocals import analyze_vocals
 from workers.analysis.waveform import waveform_peaks
 
@@ -98,7 +99,14 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         peaks = waveform_peaks(wav_path)
 
         stage("Vocal forensics", 70)
-        vox = analyze_vocals(wav_path)
+        # Isolate the vocal stem first when demucs is available: both vocal
+        # forensics and transcription are far more reliable on the stem than
+        # on the full mix (an 808 is no longer mistaken for a voice).
+        stem_path = wav_path
+        sep = separate_vocals(wav_path, out_dir=str(Path(wav_path).parent / ".demucs"))
+        if sep.get("available") and sep.get("vocals_path"):
+            stem_path = sep["vocals_path"]
+        vox = analyze_vocals(stem_path)
         vocal_profile = None
         # Refuse instead of guessing: a sub-80 Hz median F0 is bass, not voice.
         if vox["voiced_fraction"] > 0.15 and vox["f0_mean_hz"] > 80:
@@ -107,7 +115,8 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         stage("Transcribing lyrics", 80)
         lyric_lines: list[LyricLine] = []
         rhyme_summary = ""
-        tx = transcribe(wav_path)
+        tx_source = "isolated vocal stem" if stem_path != wav_path else "full mix"
+        tx = transcribe(stem_path, source=tx_source)
         if tx.get("available") and tx.get("lines"):
             texts = [seg["text"] for seg in tx["lines"]]
             schemes = rhyme_scheme(texts)

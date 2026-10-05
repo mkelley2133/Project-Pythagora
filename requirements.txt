@@ -30,6 +30,7 @@ soundfile>=0.12
 # --- Heavy / optional: source separation, transcription, large models ---
 # torch>=2.4
 faster-whisper>=1.0  # lyric transcription (optional but recommended)
+demucs>=4.0  # vocal-stem separation for transcription (optional but recommended)
 # music21>=9.1
 # boto3>=1.34
 # minio>=7.2

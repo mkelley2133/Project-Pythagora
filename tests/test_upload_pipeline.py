@@ -196,3 +196,35 @@ def test_audio_head_probe_used_by_player():
     _wait_job(job_id)
     h = client.head(f"/tracks/{track_id}/audio")
     assert h.status_code == 200, "HEAD probe failed — player falls back to synth"
+
+
+def test_separation_skips_without_demucs():
+    from workers.analysis.separate import separate_vocals
+    res = separate_vocals("/tmp/waytoolong.wav")
+    assert res["available"] is False
+    assert res["vocals_path"] is None
+    assert "demucs" in res["error"].lower()
+
+
+def test_transcribe_model_default_and_env():
+    import os
+    from workers.analysis import transcribe as txmod
+    assert txmod.DEFAULT_MODEL == os.environ.get("PYTHAGORAS_WHISPER_MODEL", "large-v3")
+    res = txmod.transcribe("/tmp/waytoolong.wav", source="full mix")
+    assert res["available"] is False  # faster-whisper not installed here
+    assert res["model"] == txmod.DEFAULT_MODEL
+    assert res["source"] == "full mix"
+
+
+def test_pipeline_transcribes_from_mix_when_no_demucs(monkeypatch):
+    """Pipeline still completes and skips lyrics when neither demucs nor
+    faster-whisper is installed (the codespace-before-install state)."""
+    import workers.pipeline as pipe
+    monkeypatch.setattr(pipe, "separate_vocals", lambda *a, **k: {"available": False, "vocals_path": None, "error": "x"})
+    wav = _synth_wav(seconds=6)
+    r = client.post("/tracks/upload", data={"title": "NoDeps", "artist": "Test Bot"},
+                    files={"audio": ("n.wav", wav, "audio/wav")})
+    track_id, job_id = r.json()["track"]["id"], r.json()["job_id"]
+    _wait_job(job_id)
+    rec = client.get(f"/tracks/{track_id}/analysis").json()
+    assert rec["telemetry_json"]["timestamped_lyrics"] == []
