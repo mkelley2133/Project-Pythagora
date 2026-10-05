@@ -427,3 +427,11 @@ body {
 
 .pipe-error { color: var(--accent); font-weight: 800; }
 #up-prog-sub { line-height: 1.6; }
+
+/* Low-confidence transcription: flagged, not hidden */
+.lyric-line.lowconf .txt { opacity: 0.55; }
+.conf-badge {
+  font-size: 10px; font-weight: 800; color: var(--amber); flex: none;
+  border: 1px solid rgba(245, 181, 68, 0.45); border-radius: 6px; padding: 2px 6px;
+  font-variant-numeric: tabular-nums;
+}

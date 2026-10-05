@@ -601,14 +601,19 @@ function renderDetail(track, telemetry, audioUrl) {
   const lyricsEl = host.querySelector("#lyrics");
   const lines = telemetry.timestamped_lyrics || [];
   lyricsEl.innerHTML = lines
-    .map(
-      (l, i) => `
-      <div class="lyric-line" data-i="${i}">
+    .map((l, i) => {
+      const conf = typeof l.confidence === "number" ? l.confidence : null;
+      const low = conf !== null && conf < 0.5;
+      return `
+      <div class="lyric-line${low ? " lowconf" : ""}" data-i="${i}"${
+        conf !== null ? ` title="transcription confidence ${Math.round(conf * 100)}%"` : ""
+      }>
         <span class="ts">${fmtTime(l.start)} → ${fmtTime(l.end)}</span>
         <span class="txt">${esc(l.text)}</span>
+        ${low ? `<span class="conf-badge">${Math.round(conf * 100)}%</span>` : ""}
         <span class="rhyme">${esc(l.rhyme)}</span>
-      </div>`
-    )
+      </div>`;
+    })
     .join("");
   const lineEls = [...lyricsEl.querySelectorAll(".lyric-line")];
 
