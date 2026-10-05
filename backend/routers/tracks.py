@@ -122,6 +122,18 @@ def get_artwork(track_id: str):
     return FileResponse(path)
 
 
+@router.get("/{track_id}/audio")
+def get_audio(track_id: str):
+    """Serve the track's audio file (uploaded originals; 404 for demo/seeded)."""
+    track = store.get_track(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    path = Path(track.original_file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(path)
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatus)
 def get_job(job_id: str) -> JobStatus:
     job = jobs.get_job(job_id)

@@ -133,3 +133,26 @@ def test_upload_rejects_bad_audio_type():
         files={"audio": ("x.exe", b"nope", "application/octet-stream")},
     )
     assert r.status_code == 400
+
+
+def test_audio_endpoint_serves_uploaded_file():
+    wav = _synth_wav(seconds=4)
+    r = client.post(
+        "/tracks/upload",
+        data={"title": "Audio Test", "artist": "Test Bot"},
+        files={"audio": ("a.wav", wav, "audio/wav")},
+    )
+    assert r.status_code == 202
+    track_id, job_id = r.json()["track"]["id"], r.json()["job_id"]
+    _wait_job(job_id)
+    r = client.get(f"/tracks/{track_id}/audio")
+    assert r.status_code == 200
+    assert r.content == wav
+
+
+def test_audio_404_when_file_missing():
+    r = client.post(
+        "/tracks",
+        json={"title": "Ghost", "artist": "X", "original_file_path": "/storage/nope.mp3"},
+    )
+    assert client.get(f"/tracks/{r.json()['id']}/audio").status_code == 404
