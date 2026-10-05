@@ -797,6 +797,7 @@ function resetUploadModal() {
   document.getElementById("up-artist").value = "";
   document.getElementById("up-form").classList.remove("hidden");
   document.getElementById("up-progress").classList.add("hidden");
+  document.getElementById("up-back").classList.add("hidden");
   const btn = document.getElementById("up-submit");
   btn.disabled = false;
   btn.textContent = "Upload & analyze";
@@ -876,6 +877,14 @@ function wireUpload() {
   document.getElementById("up-title").addEventListener("input", syncPreview);
   document.getElementById("up-artist").addEventListener("input", syncPreview);
   document.getElementById("up-submit").addEventListener("click", submitUpload);
+  document.getElementById("up-back").addEventListener("click", () => {
+    document.getElementById("up-progress").classList.add("hidden");
+    document.getElementById("up-form").classList.remove("hidden");
+    document.getElementById("up-back").classList.add("hidden");
+    const btn = document.getElementById("up-submit");
+    btn.disabled = false;
+    btn.textContent = "Upload & analyze";
+  });
   syncPreview();
 }
 
@@ -932,7 +941,14 @@ async function pollJob(jobId, track) {
         return;
       }
       if (job.state === "failed") {
-        sub.textContent = "Analysis failed: " + (job.error || "unknown error");
+        const err = job.error || "unknown error";
+        const decodeIssue = /format|decod|codec|ffmpeg|audioread|not recognised/i.test(err);
+        sub.innerHTML =
+          `<span class="pipe-error">Analysis failed.</span> ${esc(err)}` +
+          (decodeIssue
+            ? `<br><br>WAV files always decode. For MP3/M4A the server needs <code>ffmpeg</code> installed (<code>sudo apt-get install -y ffmpeg</code>).`
+            : "");
+        document.getElementById("up-back").classList.remove("hidden");
         pill.classList.add("hidden");
         return;
       }
