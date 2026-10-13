@@ -9,13 +9,25 @@ any narrative interpretation occurs.
 
 ## What it does
 
-- **Ingestion & audio separation** — isolates vocals from instrumentation so
-  downstream analysis isn't skewed by background noise.
+- **Ingestion** — hardened uploads (content-sniffed, size/duration capped)
+  feeding deterministic analysis of the full mix. *V1 scope note: stem
+  separation and automatic lyric transcription are deliberately excluded
+  from the customer version.*
 - **Deterministic harmonic & structural analysis** — exact key, mode, tempo,
   and structural segments (intro/verse/chorus/bridge), chord recognition,
   functional harmony, and Roman-numeral progressions.
-- **Verbatim transcription & rhyme mapping** — word-level timestamped lyrics
-  with programmatic line-ending phoneme analysis for exact rhyme schemes.
+- **Supplied lyric sheets & rhyme mapping** — time-synced display of lyric
+  sheets supplied with a track, with programmatic rhyme-scheme tags.
+  (Lyrics are never auto-transcribed in v1.)
+- **Measured mix suggestions** — deterministic rules over band energy,
+  levels, dynamics, stereo, and harmony; every suggestion quotes the
+  measured value that fired it.
+- **Projects & organization** — group tracks into projects, sort by
+  name/date/tempo/key/duration, keep project and per-track notes
+  (persisted across restarts).
+- **Pitch & speed tools** — independent semitone/speed rendered exports
+  (librosa) with derived tempo/key readouts, plus a 6-band parametric
+  playback EQ in the dashboard.
 - **Emotional & mood profiling** — hard numerical confidence scores for
   multi-label emotional classifications.
 - **Vocal inflection & production analysis** — F0 variation, vibrato rate,
@@ -38,11 +50,12 @@ backend/
   database.py   SQLAlchemy session manager (graceful fallback without it)
   models/       Pydantic schemas (track + telemetry bundles)
   routers/      API routes (/tracks, /tracks/{id}/analysis)
-workers/        Celery background tasks
-  tasks.py      healthcheck + analyze_chords / analyze_vocals / compute_waveform
+workers/        Background pipeline + Celery task wrapper
+  tasks.py      healthcheck + analyze_track (same run_pipeline as the API)
   analysis/     deterministic measurement: chroma chord recognition +
                 Roman numerals, vocal forensics (F0, vibrato, pitch-
-                correction heuristic), waveform peak envelopes
+                correction heuristic), waveform peak envelopes, mix
+                measurements + rule-fired suggestions
 training/       Model training pipeline configuration
 tests/          pytest suite
 frontend/       Dashboard: library carousels, dual-deck player, structural
@@ -68,11 +81,47 @@ celery -A workers.tasks.celery_app worker --loglevel=info
 ```
 
 Frontend shell: serve `frontend/` with any static server and point it at the
-API with `window.PYTHAGORAS_API_BASE` before `src/main.js` loads:
+API with the `?api=` query parameter (persisted to `localStorage` as
+`pythagora_api_base`), e.g. `https://your-static-host/?api=http://127.0.0.1:8000`.
+Remember the API must allow that origin via `PYTHAGORA_CORS_ORIGINS`.
 
-```html
-<script>window.PYTHAGORAS_API_BASE = 'http://127.0.0.1:8000';</script>
+## Run in GitHub Codespaces
+
+The dashboard and API are one app — in Codespaces you run the backend and
+open its forwarded URL. Do **not** use the GitHub Pages link for real work;
+that one is the demo by design.
+
+```bash
+cd ~/workspace/Project-Pythagora   # or wherever the repo is checked out
+~/workspace/.venvs/pg/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# (in a fresh Codespace without the venv: pip install -r requirements.txt first,
+#  then: uvicorn app.main:app --host 0.0.0.0 --port 8000)
 ```
+
+1. Codespaces will offer to forward port **8000** — accept, then open the
+   forwarded `https://<codespace>-8000.app.github.dev` URL (Ports tab →
+   right-click port 8000 → Open in Browser). Port visibility can stay
+   **Private**; you're signed in, so it just works.
+2. The badge at the top right must say **● LIVE** (and the footer reads
+   "● LIVE — connected to the Pythagoras API"). First load can sit on
+   **● CONNECTING** for a while on a cold Codespace — that's expected:
+   a backend-served page retries the API until it answers and will never
+   drop into demo on its own.
+3. Upload a track. If it analyzes, you're live — demo mode cannot analyze.
+
+**Troubleshooting — if the badge says DEMO:**
+
+- You're probably on the wrong URL (GitHub Pages ends in `github.io` —
+  that's always demo). Open the forwarded port-8000 URL instead.
+- Check the server terminal: uvicorn must be running with `--host 0.0.0.0`.
+- From the Codespace terminal: `curl http://127.0.0.1:8000/health` should
+  return `{"status":"ok",...}` and `curl http://127.0.0.1:8000/config`
+  should return `"served_by":"backend"`. If both answer but the badge still
+  says DEMO after ~30s, hard-refresh (Ctrl/Cmd+Shift+R) — an old cached
+  page is the usual culprit.
+- `?demo=1` in the URL forces demo deliberately; remove it for live work.
+  Conversely, `?api=<url>` can point a statically hosted page at a separate
+  API origin (that origin must be allowed in `PYTHAGORA_CORS_ORIGINS`).
 
 ## API
 
@@ -87,7 +136,18 @@ API with `window.PYTHAGORAS_API_BASE` before `src/main.js` loads:
 | POST   | `/tracks/upload`          | Upload audio (+ optional cover art), start analysis (202 + `job_id`) |
 | POST   | `/tracks/{id}/artwork`    | Upload/replace cover art           |
 | GET    | `/tracks/{id}/artwork`    | Serve cover art                    |
-| GET    | `/tracks/jobs/{job_id}`   | Job status: state / stage / progress 0-100 |
+| GET    | `/tracks/jobs/{job_id}`   | Job status: state / named stages / stage-weighted progress / elapsed |
+| GET    | `/tracks/{id}/report`     | Branded printable analysis report (HTML) |
+| GET    | `/tracks/compare?a=&b=`   | Side-by-side measured comparison of two tracks (JSON) |
+| GET    | `/tracks/compare/report?a=&b=` | Branded printable comparison report |
+| PATCH  | `/tracks/{id}`            | Assign/unassign project, edit track notes |
+| GET    | `/tracks/{id}/adjusted?semitones=&speed=` | Pitch/speed-adjusted render (cached) |
+| GET    | `/tracks/{id}/adjusted/meta` | Derived tempo/key readout for an adjustment |
+| GET    | `/projects`               | List projects (with track counts) |
+| POST   | `/projects`               | Create a project (201) |
+| GET    | `/projects/{id}`          | Get one project |
+| PATCH  | `/projects/{id}`          | Rename a project / edit its notes |
+| DELETE | `/projects/{id}`          | Delete a project (tracks are unassigned, never deleted) |
 
 **The upload loop:** `POST /tracks/upload` (multipart: `title`, `artist`, `audio`,
 optional `artwork`) saves files under `storage/`, returns immediately with a
@@ -95,17 +155,22 @@ optional `artwork`) saves files under `storage/`, returns immediately with a
 `GET /tracks/jobs/{job_id}` for live stage/progress — the dashboard shows a
 progress panel and opens the track when the job completes.
 
-The pipeline (`workers/pipeline.py`) runs every deterministic measurement in
-order — tempo, key, chords, sections/texture, waveform, vocal forensics,
-transcription (skipped cleanly when faster-whisper isn't installed) — then
-writes a `TelemetryBundle` plus a template-built, fully grounded summary essay.
-Vocal forensics refuses to report when the F0 track looks like bass (<80 Hz)
-rather than voice. The same pipeline is exposed as the Celery task
-`workers.tasks.analyze_track` for multi-worker deployments.
+The pipeline (`workers/pipeline.py`) runs every deterministic measurement
+in order — tempo, key, chords, sections/texture, waveform, vocal forensics
+(on the full mix; it refuses to report when the F0 track looks like bass
+<80 Hz rather than voice), then mix measurements + rule-fired suggestions —
+and writes a `TelemetryBundle` plus a template-built, fully grounded
+summary essay. Jobs run on a capped in-process executor: uploads beyond
+the concurrency cap wait in a visible "queued" state, which is what makes
+batch uploads work. Job status reports named stages with honest,
+stage-weighted progress (it moves only when a stage completes). The same
+pipeline is exposed as the Celery task `workers.tasks.analyze_track` for
+multi-worker deployments.
 
 The local analyzer is ported under `workers/analysis/`: `audio.py`
-(tempo/key/sections/texture/mood/style), `transcribe.py` (faster-whisper,
-optional), `lyrics.py` (themes, rhyme, figurative language).
+(tempo/key/sections/texture/mood/style), `measure.py` (band energy,
+dBFS levels, stereo), `suggestions.py` (deterministic mix rules),
+`lyrics.py` (rhyme utilities for supplied lyric sheets).
 
 Run the tests with `pytest`.
 
@@ -122,12 +187,13 @@ Run the tests with `pytest`.
 
 ## Roadmap
 
-- Real audio ingestion + Demucs-style source separation worker
-- librosa/music21 deterministic analysis workers feeding `TelemetryBundle`
-- faster-whisper transcription worker with word-level timestamps
-- SQLAlchemy models replacing the in-memory track store
+- SQLAlchemy models replacing the in-memory track store (projects, track
+  metadata, and notes already persist to a JSON library file)
 - Constrained-essay generation stage (telemetry-locked prompting)
 - Dashboard: carousels, dual player, waveform timeline, synced lyric viewer
+- *Beyond v1 (excluded from the customer version by decision):* stem
+  separation and automatic lyric transcription — both require external
+  model downloads and are not part of the v1 feature set
 
 ## Live demo (GitHub Pages, free)
 
