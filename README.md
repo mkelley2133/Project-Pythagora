@@ -32,8 +32,16 @@ any narrative interpretation occurs.
   multi-label emotional classifications.
 - **Vocal inflection & production analysis** — F0 variation, vibrato rate,
   pitch-bend range, pitch-correction artifacts, room acoustics.
-- **Hierarchical genre classification** — nested styles, sub-genres, and
-  instrument taxonomies cross-referenced with lyrical motifs.
+- **Genre classification (trained model)** — PANNs Cnn10 pretrained on
+  AudioSet reports the primary genre with its real output probabilities;
+  below a 0.35 top score the genre reads "Mixed / uncertain" rather than
+  forcing a label. Deterministic texture/style cues (e.g. sustained-pad
+  texture) are reported separately and are never presented as genre.
+- **Subgenre matching (zero-shot)** — LAION CLAP compares the audio
+  against text descriptions of ~46 candidate subgenres (trap, melodic
+  trap, emo rap, drill, shoegaze, ...) and reports the top 5 with
+  similarity-share percents. These are similarity rankings, not trained
+  probabilities, and are labeled as such everywhere they appear.
 - **Grounded musicological storytelling** — immutable telemetry synthesized
   into literary essays (narrative arc, lyrical-sonic dissonance, rhyme
   architecture, intro-to-outro journey).
@@ -73,6 +81,46 @@ uvicorn app.main:app --reload
 ```
 
 Then open http://127.0.0.1:8000/docs for the interactive API.
+
+### Genre model weights (one-time download)
+
+Genre classification uses the PANNs Cnn10 checkpoint (AudioSet, mAP 0.380,
+CC BY 4.0 — Kong et al., arXiv:1912.10211). Download it once into `models/`
+(the directory is git-ignored; `PYTHAGORA_GENRE_MODEL` overrides the path):
+
+```bash
+mkdir -p models
+curl -L -o "models/Cnn10_mAP=0.380.pth" \
+  "https://zenodo.org/api/records/3987831/files/Cnn10_mAP=0.380.pth/content"
+md5sum "models/Cnn10_mAP=0.380.pth"   # expect bfb1f1f9968938fa8ef4012b8471f5f6
+```
+
+Without the file, analyses still complete — the genre fields report the
+model as unavailable instead of guessing.
+
+### Subgenre model weights (one-time download)
+
+Subgenre matching is zero-shot: LAION CLAP (`laion/clap-htsat-unfused`,
+Apache-2.0, ~618 MB) compares the audio against a text description of
+each candidate subgenre and reports similarity shares (not trained
+probabilities — the bundle, dashboard, and report all label them as
+such). Download it once into `models/clap-htsat/` (git-ignored;
+`PYTHAGORA_SUBGENRE_MODEL` overrides the path):
+
+```bash
+python -c "from huggingface_hub import snapshot_download; \
+  snapshot_download('laion/clap-htsat-unfused', local_dir='models/clap-htsat')"
+sha256sum models/clap-htsat/pytorch_model.bin
+# expect 1cd3c601bc4afe0fa87be3de4c13dd2cfadd249fac1e29acf74a9b296c3219bb
+```
+
+After this one-time download, inference loads strictly from the local
+directory (`local_files_only`) — no analysis ever touches the network.
+Without the directory, analyses still complete: the subgenre fields
+report the model as unavailable. (Do not substitute
+`laion/larger_clap_music`: its Hugging Face port is broken — see
+LAION-AI/CLAP issue #126 — and produces ~zero similarity for every
+prompt.)
 
 Background workers (needs Redis running):
 

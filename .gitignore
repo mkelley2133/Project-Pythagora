@@ -21,3 +21,6 @@ venv/
 
 # Uploaded audio/artwork (local dev only)
 storage/
+
+# Trained-model weights (downloaded separately — see README)
+models/

@@ -5,8 +5,46 @@ from pydantic import BaseModel, Field
 
 
 class SubGenre(BaseModel):
+    """Legacy label/score pair. No longer populated by the pipeline:
+    genre now comes from the trained model (GenrePrediction) and the
+    old rule-based style tags are reported as TextureCue entries."""
+
     name: str = Field(..., description="Hierarchical sub-genre label")
     confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class GenrePrediction(BaseModel):
+    """One genre prediction from the trained genre model.
+
+    `probability` is the model's own output score for the label
+    (PANNs Cnn10: an AudioSet sigmoid score, averaged across analysis
+    windows) — never a rank-based placeholder."""
+
+    label: str = Field(..., description="Genre label from the model's taxonomy")
+    probability: float = Field(..., ge=0.0, le=1.0)
+
+
+class SubgenrePrediction(BaseModel):
+    """One zero-shot subgenre match from CLAP (workers/analysis/subgenre.py).
+
+    `percent` is a similarity share (softmax over a fixed candidate
+    prompt set, in percent) — NOT a trained classifier probability.
+    The bundle's subgenre_note states this wherever the values appear.
+    """
+
+    label: str = Field(..., description="Subgenre label from the candidate vocabulary")
+    family: str = Field(..., description="Broad family the subgenre belongs to")
+    percent: float = Field(..., ge=0.0, le=100.0, description="Similarity share (%)")
+
+
+class TextureCue(BaseModel):
+    """A texture/style cue from the deterministic style rules
+    (workers/analysis/audio.py style_tags). Texture is NOT genre:
+    e.g. 'Ambient / pads' describes sustained harmonic texture, and
+    `note` carries the measured evidence that fired the rule."""
+
+    name: str = Field(..., description="Texture/style cue label")
+    note: str = Field(default="", description="Measured evidence behind the cue")
 
 
 class StructuralSegment(BaseModel):
@@ -114,7 +152,51 @@ class TelemetryBundle(BaseModel):
         default=None,
         description="Set when vocal forensics were refused (e.g. insufficient separation)",
     )
-    sub_genres: list[SubGenre] = Field(default_factory=list)
+    primary_genre: str | None = Field(
+        default=None,
+        description=(
+            "Top genre label from the trained genre model; 'Mixed / uncertain' "
+            "when the top probability is below the confidence threshold; "
+            "None when the genre model was unavailable"
+        ),
+    )
+    genre_predictions: list[GenrePrediction] = Field(
+        default_factory=list,
+        description="Top genre predictions with the model's real output probabilities",
+    )
+    genre_model: str | None = Field(
+        default=None, description="Name/version of the trained genre model that ran"
+    )
+    genre_note: str | None = Field(
+        default=None,
+        description="Genre caveats: low-confidence explanation, taxonomy limits, or why the model was unavailable",
+    )
+    primary_subgenre: str | None = Field(
+        default=None,
+        description=(
+            "Top zero-shot subgenre match (CLAP) when its similarity share "
+            "is decisive; None when no match commits or the model was unavailable"
+        ),
+    )
+    subgenre_predictions: list[SubgenrePrediction] = Field(
+        default_factory=list,
+        description="Top subgenre matches with similarity-share percents (zero-shot, not probabilities)",
+    )
+    subgenre_model: str | None = Field(
+        default=None, description="Name/version of the zero-shot subgenre model that ran"
+    )
+    subgenre_note: str | None = Field(
+        default=None,
+        description="Subgenre caveats: the similarity-share honesty note, the no-commit explanation, or why the model was unavailable",
+    )
+    texture_cues: list[TextureCue] = Field(
+        default_factory=list,
+        description="Deterministic texture/style cues (not genre) from the style rules",
+    )
+    sub_genres: list[SubGenre] = Field(
+        default_factory=list,
+        description="Deprecated: kept for schema compatibility, no longer populated — see primary_genre / texture_cues",
+    )
     emotional_profile: dict[str, float] = Field(default_factory=dict)
     chords: list[str] = Field(default_factory=list)
     segments: list[StructuralSegment] = Field(default_factory=list)

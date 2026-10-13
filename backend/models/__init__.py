@@ -1,3 +1,19 @@
-from .schemas import SubGenre, TelemetryBundle, TrackAnalysisRecord, TrackRecord
+from .schemas import (
+    GenrePrediction,
+    SubGenre,
+    SubgenrePrediction,
+    TelemetryBundle,
+    TextureCue,
+    TrackAnalysisRecord,
+    TrackRecord,
+)
 
-__all__ = ["SubGenre", "TelemetryBundle", "TrackAnalysisRecord", "TrackRecord"]
+__all__ = [
+    "GenrePrediction",
+    "SubGenre",
+    "SubgenrePrediction",
+    "TelemetryBundle",
+    "TextureCue",
+    "TrackAnalysisRecord",
+    "TrackRecord",
+]
