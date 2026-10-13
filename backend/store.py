@@ -203,7 +203,34 @@ def _demo_telemetry() -> TelemetryBundle:
         duration=83.12,
         musical_key="D",
         mode="minor",
-        sub_genres=[{"name": "dream pop", "confidence": 0.82}],
+        primary_genre="Pop music",
+        genre_predictions=[
+            {"label": "Pop music", "probability": 0.412},
+            {"label": "Independent music", "probability": 0.183},
+            {"label": "Ambient music", "probability": 0.107},
+            {"label": "Electronic music", "probability": 0.088},
+            {"label": "Rock music", "probability": 0.051},
+        ],
+        genre_model="PANNs Cnn10 (AudioSet) — demo data",
+        genre_note="Demo bundle: sample genre output for layout preview.",
+        primary_subgenre="bedroom pop",
+        subgenre_predictions=[
+            {"label": "bedroom pop", "family": "Pop", "percent": 24.6},
+            {"label": "indie pop", "family": "Pop", "percent": 16.8},
+            {"label": "shoegaze", "family": "Rock / metal", "percent": 11.9},
+            {"label": "ambient electronic", "family": "Electronic", "percent": 8.7},
+            {"label": "alternative R&B", "family": "R&B", "percent": 6.4},
+        ],
+        subgenre_model="LAION CLAP (clap-htsat-unfused) — demo data",
+        subgenre_note=(
+            "Demo bundle: sample subgenre matches. Subgenre matches are "
+            "zero-shot similarity shares from CLAP — they rank how close "
+            "the audio sounds to each subgenre description and are NOT "
+            "trained classifier probabilities."
+        ),
+        texture_cues=[
+            {"name": "dream pop", "note": "Demo texture cue — placeholder until a real upload is analyzed."}
+        ],
         emotional_profile={"hope": 0.7, "melancholy": 0.8},
         chords=["Dm", "Bb", "F", "C"],
         segments=[
