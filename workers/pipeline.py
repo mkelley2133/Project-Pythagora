@@ -1,7 +1,13 @@
 """Analysis pipeline: audio file -> TelemetryBundle, with job progress.
 
-Stages are deterministic measurements. Anything that cannot be measured
-is skipped or left empty — never invented.
+Stages are deterministic measurements, with two model-based exceptions
+in the genre stage: broad genre runs a trained model (PANNs Cnn10,
+AudioSet) and reports its real output probabilities — see
+workers/analysis/genre.py — and subgenre runs zero-shot CLAP matching
+whose similarity shares are labeled as such, never as probabilities —
+see workers/analysis/subgenre.py. Both degrade gracefully when their
+model files are absent. Anything that cannot be measured or credibly
+inferred is skipped or left empty — never invented.
 
 V1 scope (customer version): stem separation and automatic lyric
 transcription are excluded — the pipeline analyzes the full mix, and
@@ -20,15 +26,19 @@ from backend import jobs
 from backend import store
 from backend.models.schemas import (
     ChordEvent,
+    GenrePrediction,
     MixMeasurements,
     MixSuggestion,
     StructuralSegment,
-    SubGenre,
+    SubgenrePrediction,
+    TextureCue,
     TelemetryBundle,
     TrackAnalysisRecord,
     VocalProfile,
 )
 from workers.analysis import audio as audio_mod
+from workers.analysis import genre as genre_mod
+from workers.analysis import subgenre as subgenre_mod
 from workers.analysis.chords import recognize_chords
 from workers.analysis.measure import measure_mix
 from workers.analysis.suggestions import build_suggestions
@@ -42,6 +52,7 @@ STAGES = [
     "Measuring tempo & key",
     "Recognizing chords",
     "Mapping sections & texture",
+    "Classifying genre",
     "Rendering waveform",
     "Vocal forensics",
     "Measuring mix & suggestions",
@@ -118,6 +129,16 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         mood = audio_mod.mood_label(feats, tempo or None, key)
         styles = audio_mod.style_tags(feats, tempo or None, key)
 
+        stage("Classifying genre")
+        # Trained genre model (PANNs Cnn10). Degrades gracefully: when
+        # the model file is missing/unloadable this returns
+        # primary_genre=None with an explicit note — never raises.
+        genre = genre_mod.analyze_genre(wav_path)
+        # Zero-shot subgenre matching (LAION CLAP). Same degradation
+        # contract; its percents are similarity shares, not trained
+        # probabilities (labeled in subgenre_note and downstream).
+        subgenre = subgenre_mod.analyze_subgenre(wav_path)
+
         stage("Rendering waveform")
         peaks = waveform_peaks(wav_path)
 
@@ -182,9 +203,20 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
                 else None
             ),
             vocal_note=vocal_note,
-            sub_genres=[
-                SubGenre(name=s["tag"], confidence=round(0.8 - 0.1 * i, 2))
-                for i, s in enumerate(styles[:4])
+            primary_genre=genre.get("primary_genre"),
+            genre_predictions=[
+                GenrePrediction(**p) for p in genre.get("genre_predictions", [])
+            ],
+            genre_model=genre.get("genre_model"),
+            genre_note=genre.get("genre_note"),
+            primary_subgenre=subgenre.get("primary_subgenre"),
+            subgenre_predictions=[
+                SubgenrePrediction(**p) for p in subgenre.get("subgenre_predictions", [])
+            ],
+            subgenre_model=subgenre.get("subgenre_model"),
+            subgenre_note=subgenre.get("subgenre_note"),
+            texture_cues=[
+                TextureCue(name=s["tag"], note=s.get("reason", "")) for s in styles[:4]
             ],
             emotional_profile=emotional_profile,
             chords=[e.chord for e in chord_events[:24]],
