@@ -2,10 +2,11 @@
 
 Pipeline: HPSS harmonic component -> CQT chromagram -> beat-synchronous
 segments (fixed windows when beat tracking is unreliable) -> cosine
-similarity against 24 major/minor triad templates -> Viterbi temporal
-smoothing (chord changes prefer beat boundaries; single-segment flips are
-suppressed) -> short-event absorption -> merged chord events -> Roman
-numerals relative to the track's key.
+similarity against 24 major/minor triad templates -> harmonic-bleed
+correction (see _BLEED_BETA) -> Viterbi temporal smoothing (chord changes
+prefer beat boundaries; single-segment flips are suppressed) -> short-event
+absorption -> merged chord events -> Roman numerals relative to the track's
+key.
 
 Everything here is deterministic signal processing (no generative models),
 in keeping with the project's zero-hallucination design: a chord label is a
@@ -44,6 +45,39 @@ def _build_templates() -> dict[str, np.ndarray]:
 
 _TEMPLATES = _build_templates()
 _CHORD_NAMES = list(_TEMPLATES.keys())
+_TEMPLATE_INDEX = {name: i for i, name in enumerate(_CHORD_NAMES)}
+
+# Harmonic-bleed correction for major/minor quality decisions.
+#
+# A root tone's 5th harmonic IS its major third (two octaves up), so the
+# major-third pitch class carries a bleed floor proportional to root
+# energy that the minor-third pitch class does not (no low harmonic of
+# the root or fifth lands on the minor third). The template decision
+# between a root's major and minor forms rides entirely on the two third
+# pitch classes, so when a chord's real third is weak, that bleed
+# decides the label instead, and minor chords flip to major (measured on
+# a human-verified C-minor track: the tonic slot of an identical loop
+# alternated Cm/C across repetitions, 25s of C major in a C-minor song).
+#
+# The correction discounts each major template's segment similarity by
+# _BLEED_BETA * (the segment's root chroma energy). Dose selection
+# (validated 2026-10-13; do not retune without re-running both checks):
+# - A synthetic weak-third battery (full-harmonic-series triads, exact
+#   ground truth) flips Dm->D / Em->E at the weakest third gain on the
+#   uncorrected recognizer; every dose in 0.0075-0.03 fixes the battery
+#   with no regression at stronger gains, and 0.05 over-corrects.
+# - On real tracks with human-verified keys, the tonic-quality share
+#   (tonic read in the key's quality) rises with dose — This Side
+#   0.73 -> 0.89 at 0.0075, 0.95 at 0.03 — but so does collateral drift
+#   on non-tonic major chords whose thirds are also weak (Drowning's
+#   IV chord erodes from 0.0075 up, and is gone at 0.03). 0.0075 is the
+#   smallest dose that fixes the battery and captures most of the
+#   verified tonic win, so it is the shipped dose.
+# A per-track calibrated dose was tried and rejected: in real mixes the
+# major-third pitch class also carries melody and neighboring-chord
+# energy, so the calibrated value saturates and destroys verified major
+# chords (Drowning tonic share 0.89 -> 0.21).
+_BLEED_BETA = 0.0075
 
 _MAJOR_ROMAN = {
     0: "I", 1: "bII", 2: "II", 3: "bIII", 4: "III", 5: "IV",
@@ -181,6 +215,7 @@ def recognize_chords(
     # --- Per-segment template similarities ---
     template_matrix = np.stack([_TEMPLATES[name] for name in _CHORD_NAMES])
     seg_sims = np.zeros((n_segs, len(_CHORD_NAMES)))
+    seg_vecs: list[np.ndarray | None] = [None] * n_segs
     silent = np.zeros(n_segs, dtype=bool)
     for i in range(n_segs):
         seg = chroma[:, seg_bounds[i] : seg_bounds[i + 1]]
@@ -192,7 +227,21 @@ def recognize_chords(
         if norm < 1e-9:
             silent[i] = True
             continue
-        seg_sims[i] = template_matrix @ (vec / norm)
+        seg_vecs[i] = vec / norm
+        seg_sims[i] = template_matrix @ seg_vecs[i]
+    # --- Harmonic-bleed correction (see _BLEED_BETA) ---
+    # Discount each major template by the bleed its root's own harmonics
+    # are expected to have injected into the major-third pitch class.
+    # Runs before the silent-segment carry below so carried evidence is
+    # the corrected evidence.
+    for i in range(n_segs):
+        vec = seg_vecs[i]
+        if vec is None:
+            continue
+        for root in range(12):
+            j_major = _TEMPLATE_INDEX[PITCH_CLASSES[root]]
+            seg_sims[i, j_major] -= _BLEED_BETA * float(vec[root])
+
     for i in range(n_segs):
         if silent[i]:
             # Carry the previous segment's evidence so silence doesn't
