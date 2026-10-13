@@ -87,7 +87,27 @@ const DEMO_TELEMETRY = {
   duration: 83.12,
   musical_key: "D",
   mode: "minor",
-  sub_genres: [{ name: "dream pop", confidence: 0.82 }],
+  primary_genre: "Pop music",
+  genre_predictions: [
+    { label: "Pop music", probability: 0.412 },
+    { label: "Independent music", probability: 0.183 },
+    { label: "Ambient music", probability: 0.107 },
+    { label: "Electronic music", probability: 0.088 },
+    { label: "Rock music", probability: 0.051 },
+  ],
+  genre_model: "PANNs Cnn10 (AudioSet) — demo data",
+  genre_note: "Demo bundle: sample genre output for layout preview.",
+  primary_subgenre: "bedroom pop",
+  subgenre_predictions: [
+    { label: "bedroom pop", family: "Pop", percent: 24.6 },
+    { label: "indie pop", family: "Pop", percent: 16.8 },
+    { label: "shoegaze", family: "Rock / metal", percent: 11.9 },
+    { label: "ambient electronic", family: "Electronic", percent: 8.7 },
+    { label: "alternative R&B", family: "R&B", percent: 6.4 },
+  ],
+  subgenre_model: "LAION CLAP (clap-htsat-unfused) — demo data",
+  subgenre_note: "Demo bundle: sample subgenre matches. Subgenre matches are zero-shot similarity shares from CLAP — they rank how close the audio sounds to each subgenre description and are NOT trained classifier probabilities.",
+  texture_cues: [{ name: "dream pop", note: "Demo texture cue — placeholder until a real upload is analyzed." }],
   emotional_profile: { hope: 0.7, melancholy: 0.8 },
   chords: ["Dm", "Bb", "F", "C"],
   segments: [
@@ -935,10 +955,65 @@ function renderDetail(track, telemetry, audioUrl) {
   }
 
   const moods = Object.entries(telemetry.emotional_profile || {}).sort((a, b) => b[1] - a[1]);
-  const genres = (telemetry.sub_genres || [])
-    .map((g) => `<span class="chip">${esc(g.name)} · ${Math.round(g.confidence * 100)}%</span>`)
+  const genreChip = telemetry.primary_genre
+    ? `<span class="chip hot">Genre: ${esc(telemetry.primary_genre)}${
+        telemetry.genre_predictions && telemetry.genre_predictions.length
+          ? ` · ${(telemetry.genre_predictions[0].probability * 100).toFixed(1)}%`
+          : ""
+      }${telemetry.primary_subgenre ? ` → ${esc(telemetry.primary_subgenre)}` : ""}</span>`
+    : "";
+  const textureChips = (telemetry.texture_cues || [])
+    .map((c) => `<span class="chip" title="${esc(c.note || "")}">${esc(c.name)}</span>`)
     .join("");
+  const textureRow = textureChips
+    ? `<div class="chip-row"><span class="chip-label">Texture cues</span>${textureChips}</div>`
+    : "";
 
+  const genrePanel = (() => {
+    const preds = telemetry.genre_predictions || [];
+    const predRows = preds
+      .map(
+        (p) => `
+      <div class="mood-row">
+        <div class="mood-top"><b>${esc(p.label)}</b><span>${(p.probability * 100).toFixed(1)}%</span></div>
+        <div class="mood-bar"><div class="mood-fill" style="width:${(p.probability * 100).toFixed(1)}%"></div></div>
+      </div>`
+      )
+      .join("");
+    const head = telemetry.primary_genre
+      ? `<p class="essay"><strong>${esc(telemetry.primary_genre)}${
+          telemetry.primary_subgenre ? ` → ${esc(telemetry.primary_subgenre)}` : ""
+        }</strong></p>`
+      : `<p class="essay">No genre classification for this track.</p>`;
+    const note = telemetry.genre_note ? `<p class="player-note">${esc(telemetry.genre_note)}</p>` : "";
+    const model = telemetry.genre_model ? `<p class="player-note">Model: ${esc(telemetry.genre_model)}</p>` : "";
+    const subPreds = telemetry.subgenre_predictions || [];
+    const subRows = subPreds
+      .map(
+        (p) => `
+      <div class="mood-row">
+        <div class="mood-top"><b>${esc(p.label)}</b><span>${esc(p.family)} · ${Number(p.percent).toFixed(1)}%</span></div>
+        <div class="mood-bar"><div class="mood-fill" style="width:${Number(p.percent).toFixed(1)}%"></div></div>
+      </div>`
+      )
+      .join("");
+    const subBlock = (subPreds.length || telemetry.subgenre_note)
+      ? `<div class="subgenre-block">
+          <h3>Subgenre matches · zero-shot similarity</h3>
+          ${subRows}
+          ${telemetry.subgenre_note ? `<p class="player-note">${esc(telemetry.subgenre_note)}</p>` : ""}
+          ${telemetry.subgenre_model ? `<p class="player-note">Model: ${esc(telemetry.subgenre_model)}</p>` : ""}
+        </div>`
+      : "";
+    return `${head}${predRows}${note}${model}${subBlock}`;
+  })();
+  const texturePanel = (telemetry.texture_cues || []).length
+    ? (telemetry.texture_cues || [])
+        .map(
+          (c) => `<div class="mood-row"><div class="mood-top"><b>${esc(c.name)}</b></div><p class="player-note">${esc(c.note || "")}</p></div>`
+        )
+        .join("")
+    : `<p class="essay">No texture cues recorded.</p>`;
   const vp = telemetry.vocal_profile;
   const vocalHtml = vp
     ? `<div class="tele-grid">
@@ -970,8 +1045,9 @@ function renderDetail(track, telemetry, audioUrl) {
           <span class="chip hot">${telemetry.bpm} BPM</span>
           <span class="chip">${esc(telemetry.musical_key)} ${esc(telemetry.mode)}</span>
           <span class="chip">${esc(telemetry.rhyme_scheme_summary)} rhyme</span>
-          ${genres}
+          ${genreChip}
         </div>
+        ${textureRow}
         ${apiLive ? `<div class="detail-actions"><button class="ghost-btn report-btn" id="report-btn">⭳ Analysis report (print / PDF)</button></div>` : ""}
         ${(() => {
           const others = state.tracks.filter((t) => t.id !== track.id && state.telemetry[t.id]);
@@ -1090,6 +1166,16 @@ function renderDetail(track, telemetry, audioUrl) {
             ${mixCells}
           </div>
           <div id="moods"></div>
+        </div>
+        <div class="panel">
+          <h2>Genre · trained model + subgenre</h2>
+          <p class="panel-sub">PANNs Cnn10 (AudioSet) — real model probabilities, not rules</p>
+          ${genrePanel}
+        </div>
+        <div class="panel">
+          <h2>Texture cues</h2>
+          <p class="panel-sub">Deterministic style rules over texture — texture is not genre</p>
+          ${texturePanel}
         </div>
         <div class="panel">
           <h2>Vocal forensics</h2>
@@ -1592,6 +1678,7 @@ const PIPE_STAGES = [
   "Measuring tempo & key",
   "Recognizing chords",
   "Mapping sections & texture",
+  "Classifying genre",
   "Rendering waveform",
   "Vocal forensics",
   "Measuring mix & suggestions",
