@@ -58,16 +58,51 @@ def _vibrato(cents: np.ndarray, sr: int, hop: int) -> tuple[float, float]:
     return round(rate, 2), round(depth, 1)
 
 
+def _separation_verdict(f0_median_hz: float, sub80_share: float) -> tuple[bool, str | None]:
+    """Decide whether the tracked melodic line is separable from bass content.
+
+    On a full mix, PYIN happily locks onto an 808: the "vocal" F0 then sits
+    in the sub-bass range while most spectral energy lives below 80 Hz.
+    Returning a confident vocal profile from that is a wrong answer, so the
+    caller refuses instead (zero-hallucination rule).
+    """
+    reasons: list[str] = []
+    if f0_median_hz < 80.0:
+        reasons.append(
+            f"the tracked pitch (median {f0_median_hz:.0f} Hz) sits in the sub-bass range"
+        )
+    if sub80_share > 0.45 and f0_median_hz < 120.0:
+        reasons.append("spectral energy is dominated by sub-80 Hz content")
+    if not reasons:
+        return True, None
+    return False, "Insufficient separation: " + "; ".join(reasons) + "."
+
+
+def _sub80_energy_share(y: np.ndarray, sr: int) -> float:
+    """Share of spectral energy below 80 Hz (the 808/sub zone)."""
+    spectrum = np.abs(librosa.stft(y, n_fft=2048))
+    total = float(spectrum.sum())
+    if total <= 0:
+        return 0.0
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    return round(float(spectrum[freqs < 80.0].sum() / total), 3)
+
+
 def analyze_vocals(audio_path: str, sr: int = 22050) -> dict:
     """Analyze vocal production from an audio file.
 
     Best run on an isolated vocal stem; on a full mix the F0 tracker may
-    lock onto the loudest pitched element instead.
+    lock onto the loudest pitched element instead. The result always carries
+    `separation_ok` / `refusal_reason`: when the melodic line cannot be
+    separated from bass content, separation_ok is False and callers must
+    refuse rather than report the numbers as a vocal profile.
     """
     _require_librosa()
     y, _ = librosa.load(audio_path, sr=sr, mono=True)
     if y.size == 0:
         return _empty()
+
+    sub80_share = _sub80_energy_share(y, sr)
 
     hop = 512
     f0, voiced_flag, _ = librosa.pyin(
@@ -80,13 +115,18 @@ def analyze_vocals(audio_path: str, sr: int = 22050) -> dict:
     voiced = voiced_flag & ~np.isnan(f0)
     voiced_fraction = round(float(np.mean(voiced_flag)), 3)
     if int(np.sum(voiced)) < 32:
-        result = _empty()
+        result = _empty(sub80_share)
         result["voiced_fraction"] = voiced_fraction
+        result["refusal_reason"] = (
+            "Insufficient separation: too little voiced content could be tracked."
+        )
         return result
 
     f0v = f0[voiced]
     f0_mean = float(np.mean(f0v))
+    f0_median = float(np.median(f0v))
     f0_range_st = round(float(12 * np.log2(np.max(f0v) / max(np.min(f0v), 1e-9))), 2)
+    separation_ok, refusal_reason = _separation_verdict(f0_median, sub80_share)
 
     cents = 1200 * np.log2(f0v / np.median(f0v))
     vib_rate, vib_depth = _vibrato(cents, sr, hop)
@@ -104,20 +144,28 @@ def analyze_vocals(audio_path: str, sr: int = 22050) -> dict:
 
     return {
         "f0_mean_hz": round(f0_mean, 1),
+        "f0_median_hz": round(f0_median, 1),
         "f0_range_semitones": f0_range_st,
         "vibrato_rate_hz": vib_rate,
         "vibrato_depth_cents": vib_depth,
         "autotune_likelihood": autotune,
         "voiced_fraction": voiced_fraction,
+        "sub80_energy_share": sub80_share,
+        "separation_ok": separation_ok,
+        "refusal_reason": refusal_reason,
     }
 
 
-def _empty() -> dict:
+def _empty(sub80_share: float = 0.0) -> dict:
     return {
         "f0_mean_hz": 0.0,
+        "f0_median_hz": 0.0,
         "f0_range_semitones": 0.0,
         "vibrato_rate_hz": 0.0,
         "vibrato_depth_cents": 0.0,
         "autotune_likelihood": 0.0,
         "voiced_fraction": 0.0,
+        "sub80_energy_share": sub80_share,
+        "separation_ok": False,
+        "refusal_reason": "Insufficient voiced content to analyze.",
     }
