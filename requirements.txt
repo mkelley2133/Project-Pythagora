@@ -27,6 +27,18 @@ numpy>=1.26
 scipy>=1.13
 soundfile>=0.12
 
+# Trained genre model (PANNs Cnn10, AudioSet) — workers/analysis/genre.py.
+# The checkpoint itself is a separate one-time download (see README,
+# "Genre model weights"); without it the genre stage degrades gracefully.
+torch>=2.4
+torchlibrosa>=0.1
+
+# Zero-shot subgenre matching (LAION CLAP) — workers/analysis/subgenre.py.
+# Weights are a separate one-time download (see README, "Subgenre model
+# weights"); inference loads them from local files only. Without them the
+# subgenre stage degrades gracefully.
+transformers>=4.48
+
 # --- Excluded from the v1 customer version -------------------------------
 # Stem separation and automatic lyric transcription are OUT of v1 (their
 # model weights require external downloads). Do not re-enable these lines
