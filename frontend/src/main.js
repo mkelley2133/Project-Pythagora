@@ -216,9 +216,25 @@ function apiHeaders(extra = {}) {
   return key ? { ...extra, "X-API-Key": key } : extra;
 }
 
+/* Build an Error from a failed response, surfacing the server's own
+   JSON `detail` (e.g. "Audio could not be decoded.") instead of a bare
+   "HTTP 400" — callers toast err.message, so this one helper improves
+   every surface. The status rides along for callers that branch on it
+   (loadAnalysis treats 404 as "not analyzed yet", not an error). */
+async function apiError(res) {
+  let detail = `HTTP ${res.status}`;
+  try {
+    const body = await res.json();
+    if (body && typeof body.detail === "string" && body.detail) detail = body.detail;
+  } catch { /* non-JSON body: keep the status line */ }
+  const err = new Error(detail);
+  err.status = res.status;
+  return err;
+}
+
 async function apiGet(path) {
   const res = await fetch(API_BASE + path, { headers: apiHeaders() });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   return res.json();
 }
 
@@ -228,7 +244,7 @@ async function apiSend(method, path, body) {
     headers: apiHeaders({ "Content-Type": "application/json" }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw await apiError(res);
   if (res.status === 204) return null;
   return res.json();
 }
@@ -269,7 +285,7 @@ async function openApiPage(url) {
   }
   try {
     const res = await fetch(url, { headers: apiHeaders() });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     const blob = await res.blob();
     window.open(URL.createObjectURL(blob), "_blank", "noopener");
   } catch (err) {
@@ -352,12 +368,18 @@ async function loadTracks() {
   return [DEMO_TRACK];
 }
 
-async function loadAnalysis(trackId) {
+async function loadAnalysis(trackId, { reportErrors = false } = {}) {
   if (apiLive) {
     try {
       const rec = await apiGet(`/tracks/${trackId}/analysis`);
       return rec.telemetry_json || null;
-    } catch {
+    } catch (err) {
+      // 404 means "not analyzed yet" — a normal state, kept silent
+      // (the library loader calls this for every track). Anything else
+      // is a real failure worth surfacing when the caller asks.
+      if (reportErrors && err.status !== 404) {
+        toast("Couldn't load this track's analysis: " + err.message);
+      }
       return null;
     }
   }
@@ -846,7 +868,7 @@ async function openDetail(trackId) {
     toast("Track not found in the live library.");
     return;
   }
-  const telemetry = await loadAnalysis(trackId);
+  const telemetry = await loadAnalysis(trackId, { reportErrors: true });
   // Prefer the real uploaded recording when the API can serve it;
   // otherwise fall back to the synthesized stand-in.
   let audioUrl = null;
@@ -1407,7 +1429,7 @@ function renderDetail(track, telemetry, audioUrl) {
           try { key = localStorage.getItem("pythagora_api_key"); } catch { /* ignore */ }
           if (key) {
             const res = await fetch(url, { headers: apiHeaders() });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (!res.ok) throw await apiError(res);
             audioEl.src = URL.createObjectURL(await res.blob());
           } else {
             audioEl.src = url;
