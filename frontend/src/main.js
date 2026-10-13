@@ -1,6 +1,61 @@
 import { SynthEngine } from "./synth.js";
+import {
+  clampAdjust,
+  coupledPlaybackRate,
+  effectiveBpm,
+  transposeKey,
+} from "./adjust.js";
+import {
+  EQ_BANDS,
+  EQ_PRESETS,
+  EqChain,
+  combinedResponseDb,
+  loadEqSettings,
+  presetBandState,
+  saveEqSettings,
+} from "./eq.js";
+import { sortTracks } from "./sort.js";
 
-const API_BASE = String(window.PYTHAGORAS_API_BASE || "http://127.0.0.1:8000").replace(/\/+$/, "");
+/* ------------------------------------------------------------------ */
+/* Mode detection — LIVE vs DEMO                                       */
+/*                                                                     */
+/* The backend injects <meta name="pythagoras-served-by"> into the     */
+/* dashboard it serves (see app/main.py). Marker present  => this page */
+/* came from the real API, so demo fallback is FORBIDDEN: the boot     */
+/* sequence retries /health with backoff until it answers (Codespaces */
+/* cold starts are slow) and the badge shows LIVE once connected.      */
+/* Demo engages ONLY when the page was not backend-served AND one of:  */
+/*   - hosted on *.github.io (the GitHub Pages demo),                  */
+/*   - explicit ?demo=1 in the URL,                                    */
+/*   - no API answered after the full ~20s retry window.               */
+/* API base resolution order: ?api= (persisted) > localStorage        */
+/* pythagora_api_base > window.PYTHAGORAS_API_BASE > page origin.      */
+/* ------------------------------------------------------------------ */
+const _qs = new URLSearchParams(window.location.search);
+const SERVED_BY_BACKEND = Boolean(
+  document.querySelector('meta[name="pythagoras-served-by"]')
+);
+const EXPLICIT_DEMO =
+  _qs.get("demo") === "1" || /(^|\.)github\.io$/i.test(window.location.hostname);
+
+function resolveApiBase() {
+  const fromQuery = _qs.get("api");
+  if (fromQuery) {
+    try {
+      localStorage.setItem("pythagora_api_base", fromQuery);
+    } catch { /* storage unavailable */ }
+    return fromQuery;
+  }
+  try {
+    const stored = localStorage.getItem("pythagora_api_base");
+    if (stored) return stored;
+  } catch { /* storage unavailable */ }
+  return window.PYTHAGORAS_API_BASE || window.location.origin;
+}
+
+const API_BASE = String(resolveApiBase()).replace(/\/+$/, "");
+/* "connecting" | "live" | "demo" — the badge in the topbar reflects this. */
+let appMode = "connecting";
 
 /* ------------------------------------------------------------------ */
 /* Demo fallback data (mirrors the backend demo bundle) so the UI      */
@@ -11,10 +66,21 @@ const DEMO_TRACK = {
   title: "Sample Signal",
   artist: "Pythagoras",
   original_file_path: "/storage/demo.mp3",
-  vocal_stem_path: "/storage/demo_vocals.wav",
-  instrumental_stem_path: "/storage/demo_inst.wav",
+  project_id: "demo-project-001",
+  notes: "Placeholder telemetry until a real upload is analyzed.",
   created_at: "2026-01-01T00:00:00Z",
 };
+
+const DEMO_PROJECTS = [
+  {
+    id: "demo-project-001",
+    name: "Sample Sessions",
+    notes: "Demo project — groups the sample track so projects, sorting, and notes have something to show before your first upload.",
+    created_at: "2026-01-01T00:00:00Z",
+    track_count: 1,
+    track_ids: ["demo-track-001"],
+  },
+];
 
 const DEMO_TELEMETRY = {
   bpm: 92.4,
@@ -32,6 +98,19 @@ const DEMO_TELEMETRY = {
     { name: "Chorus", start: 62.34, end: 83.12 },
   ],
   rhyme_scheme_summary: "ABCB",
+  mix_measurements: {
+    sub_pct: 4.2, low_pct: 21.5, mid_pct: 46.8, high_pct: 21.9, air_pct: 5.6,
+    peak_dbfs: -1.2, rms_dbfs: -16.4, crest_db: 15.2,
+    is_stereo: true, stereo_correlation: 0.62, stereo_width: 0.58,
+  },
+  suggestions: [
+    {
+      area: "Harmony",
+      suggestion: "The progression never leaves its 4-chord loop — consider a bridge or pre-chorus variation to reset the ear.",
+      why: "Only 4 unique chords (Dm, Bb, F, C) across the full 83s demo track.",
+      severity: "low",
+    },
+  ],
   timestamped_lyrics: [
     { start: 10.5, end: 15.5, text: "Neon hums on an empty street", rhyme: "A" },
     { start: 15.7, end: 20.7, text: "I chase the echo of your heartbeat", rhyme: "B" },
@@ -107,31 +186,148 @@ function toast(msg) {
 /* ------------------------------------------------------------------ */
 let apiLive = false;
 
+/* When the API runs with PYTHAGORA_API_KEY set, store the key in this
+   browser via:  localStorage.setItem("pythagora_api_key", "<key>")       */
+function apiHeaders(extra = {}) {
+  let key = null;
+  try {
+    key = localStorage.getItem("pythagora_api_key");
+  } catch { /* storage unavailable */ }
+  return key ? { ...extra, "X-API-Key": key } : extra;
+}
+
 async function apiGet(path) {
-  const res = await fetch(API_BASE + path);
+  const res = await fetch(API_BASE + path, { headers: apiHeaders() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-async function checkApi() {
-  const el = document.getElementById("api-status");
-  try {
-    await apiGet("/health");
-    apiLive = true;
-    el.classList.add("ok");
-    el.querySelector(".label").textContent = "api live";
-  } catch {
-    apiLive = false;
-    el.querySelector(".label").textContent = "demo mode";
+async function apiSend(method, path, body) {
+  const res = await fetch(API_BASE + path, {
+    method,
+    headers: apiHeaders({ "Content-Type": "application/json" }),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+async function loadProjects() {
+  if (apiLive) {
+    try {
+      return await apiGet("/projects");
+    } catch (err) {
+      /* Live mode never substitutes demo data silently. */
+      toast("Couldn't load projects from the API: " + err.message);
+      return [];
+    }
   }
-  document.getElementById("footer-mode").textContent = apiLive ? "live api" : "demo telemetry";
+  return DEMO_PROJECTS.map((p) => ({ ...p }));
+}
+
+/* CSP forbids inline onerror handlers, so broken artwork hides itself
+   through this listener instead — call after injecting markup. */
+function wireImgFallback(scope) {
+  scope.querySelectorAll("img.cover-img, img.billboard-art").forEach((img) => {
+    img.addEventListener("error", () => img.remove());
+  });
+}
+
+async function openReport(trackId) {
+  return openApiPage(`${API_BASE}/tracks/${trackId}/report`);
+}
+
+async function openApiPage(url) {
+  let key = null;
+  try {
+    key = localStorage.getItem("pythagora_api_key");
+  } catch { /* storage unavailable */ }
+  if (!key) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  try {
+    const res = await fetch(url, { headers: apiHeaders() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    window.open(URL.createObjectURL(blob), "_blank", "noopener");
+  } catch (err) {
+    toast("Report failed: " + err.message);
+  }
+}
+
+function setModeBadge(mode, label) {
+  const el = document.getElementById("api-status");
+  if (el) {
+    el.classList.toggle("ok", mode === "live");
+    el.classList.toggle("demo", mode === "demo");
+    el.classList.toggle("connecting", mode === "connecting");
+    const labelEl = el.querySelector(".label");
+    if (labelEl) labelEl.textContent = label;
+  }
+  const footer = document.getElementById("footer-mode");
+  if (footer) {
+    footer.textContent =
+      mode === "live"
+        ? "● LIVE — connected to the Pythagoras API"
+        : mode === "demo"
+          ? "● DEMO — sample telemetry, no backend connected"
+          : "● CONNECTING — waiting for the Pythagoras API…";
+  }
+}
+
+function enterDemoMode() {
+  apiLive = false;
+  appMode = "demo";
+  setModeBadge("demo", "DEMO");
+}
+
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function checkApi() {
+  /* Explicit demo (GitHub Pages host or ?demo=1) is a deliberate choice,
+     not a fallback — honor it immediately, even on a backend-served page
+     where the toggle is the only way demo can ever engage. */
+  if (EXPLICIT_DEMO) {
+    enterDemoMode();
+    return;
+  }
+  /* Retry with backoff. Backend-served pages retry indefinitely: the API
+     is on this same origin, so a failure can only be a cold start that
+     hasn't finished yet — demo data would be a lie. Static-hosted pages
+     get a ~20s window (Codespaces-class cold starts) before demo. */
+  const delays = [600, 1200, 2000, 3000, 4000, 5000, 5000];
+  const started = Date.now();
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    setModeBadge("connecting", `connecting… (${attempt})`);
+    try {
+      await apiGet("/health");
+      apiLive = true;
+      appMode = "live";
+      setModeBadge("live", "LIVE");
+      return;
+    } catch {
+      const elapsed = Date.now() - started;
+      if (!SERVED_BY_BACKEND && elapsed > 20000) {
+        enterDemoMode();
+        return;
+      }
+      await _sleep(delays[Math.min(attempt - 1, delays.length - 1)]);
+    }
+  }
 }
 
 async function loadTracks() {
   if (apiLive) {
     try {
       return await apiGet("/tracks");
-    } catch { /* fall through to demo */ }
+    } catch (err) {
+      toast("Couldn't load tracks from the API: " + err.message);
+      return [];
+    }
   }
   return [DEMO_TRACK];
 }
@@ -141,7 +337,9 @@ async function loadAnalysis(trackId) {
     try {
       const rec = await apiGet(`/tracks/${trackId}/analysis`);
       return rec.telemetry_json || null;
-    } catch { /* fall through */ }
+    } catch {
+      return null;
+    }
   }
   return trackId === DEMO_TRACK.id ? DEMO_TELEMETRY : null;
 }
@@ -152,9 +350,35 @@ async function loadAnalysis(trackId) {
 const state = {
   tracks: [],
   telemetry: {}, // trackId -> TelemetryBundle
+  projects: [],
+  projectFilter: "all", // "all" | "unsorted" | projectId
+  sortKey: "date",
+  sortDir: "desc",
   detail: null, // { track, telemetry, engine, peaks, raf, activeLyric }
   lastTrackId: null,
+  comparePair: null, // { a, b } track ids while the compare modal is open
 };
+
+/* Player FX (Phases H + I): one EQ chain per live audio context, settings
+   persisted per browser via localStorage. */
+const fx = {
+  settings: loadEqSettings(),
+  chain: null,
+  ctx: null,
+  adjust: { semitones: 0, speed: 1 },
+};
+
+function attachFx(ctx, sourceNode) {
+  try {
+    const chain = new EqChain(ctx, fx.settings);
+    try { sourceNode.disconnect(); } catch { /* not wired yet */ }
+    sourceNode.connect(chain.input);
+    chain.output.connect(ctx.destination);
+    fx.chain = chain;
+    fx.ctx = ctx;
+    drawEqCurve();
+  } catch { /* FX is enhancement-only; raw playback continues */ }
+}
 
 /* ------------------------------------------------------------------ */
 /* Library view                                                       */
@@ -163,11 +387,14 @@ function trackCard(track) {
   const { h1, h2 } = coverHues(track.id);
   const tel = state.telemetry[track.id];
   const art = artworkUrl(track);
+  const project = track.project_id
+    ? state.projects.find((p) => p.id === track.project_id)
+    : null;
   const card = document.createElement("div");
   card.className = "track-card";
   card.innerHTML = `
     <div class="cover" style="--h1:${h1};--h2:${h2}">
-      ${art ? `<img class="cover-img" src="${art}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+      ${art ? `<img class="cover-img" src="${art}" alt="" loading="lazy">` : ""}
       <span class="cover-glyph">♪</span>
       <div class="play-hover"><button class="pp" aria-label="Open">▶</button></div>
     </div>
@@ -180,9 +407,11 @@ function trackCard(track) {
             ? `<span class="chip hot">${tel.bpm} BPM</span><span class="chip">${esc(tel.musical_key)} ${esc(tel.mode)}</span>`
             : `<span class="chip">analysis pending</span>`
         }
+        ${project ? `<span class="chip proj-chip">▸ ${esc(project.name)}</span>` : ""}
       </div>
     </div>`;
   card.addEventListener("click", () => openDetail(track.id));
+  wireImgFallback(card);
   return card;
 }
 
@@ -257,7 +486,7 @@ function renderBillboard() {
   const mood = tel ? moodOf(tel) : "—";
   host.innerHTML = `
     <div class="billboard" style="--h1:${h1};--h2:${h2}">
-      ${art ? `<img class="billboard-art" src="${art}" alt="" onerror="this.remove()">` : ""}
+      ${art ? `<img class="billboard-art" src="${art}" alt="">` : ""}
       <div class="billboard-shade"></div>
       <div class="billboard-copy">
         <p class="eyebrow">Featured analysis · ${esc(mood)}</p>
@@ -279,8 +508,145 @@ function renderBillboard() {
         </div>
       </div>
     </div>`;
+  wireImgFallback(host);
   document.getElementById("bb-play").addEventListener("click", () => openDetail(feat.id));
   document.getElementById("bb-info").addEventListener("click", () => openDetail(feat.id));
+}
+
+function renderLibraryControls() {
+  const bar = document.createElement("div");
+  bar.className = "lib-controls";
+  const tab = (value, label) =>
+    `<button class="proj-tab${state.projectFilter === value ? " active" : ""}" data-filter="${esc(value)}">${esc(label)}</button>`;
+  bar.innerHTML = `
+    <div class="proj-tabs">
+      ${tab("all", "All tracks")}
+      ${tab("unsorted", "Unsorted")}
+      ${state.projects.map((p) => tab(p.id, p.name)).join("")}
+      <button class="proj-tab proj-new" id="proj-new-btn">+ Project</button>
+      <span class="proj-new-form hidden" id="proj-new-form">
+        <input id="proj-new-name" type="text" placeholder="Project name" maxlength="200" />
+        <button class="cta-btn" id="proj-new-create">Create</button>
+      </span>
+    </div>
+    <div class="sort-controls">
+      <label>Sort
+        <select id="sort-key">
+          <option value="date"${state.sortKey === "date" ? " selected" : ""}>Date added</option>
+          <option value="name"${state.sortKey === "name" ? " selected" : ""}>Name</option>
+          <option value="tempo"${state.sortKey === "tempo" ? " selected" : ""}>Tempo</option>
+          <option value="key"${state.sortKey === "key" ? " selected" : ""}>Key</option>
+          <option value="duration"${state.sortKey === "duration" ? " selected" : ""}>Duration</option>
+        </select>
+      </label>
+      <button class="ghost-btn sort-dir" id="sort-dir" title="Toggle sort direction">${state.sortDir === "asc" ? "↑ Asc" : "↓ Desc"}</button>
+    </div>`;
+  bar.querySelectorAll(".proj-tab[data-filter]").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.projectFilter = b.dataset.filter;
+      renderLibrary();
+    })
+  );
+  bar.querySelector("#sort-key").addEventListener("change", (e) => {
+    state.sortKey = e.target.value;
+    renderLibrary();
+  });
+  bar.querySelector("#sort-dir").addEventListener("click", () => {
+    state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+    renderLibrary();
+  });
+  bar.querySelector("#proj-new-btn").addEventListener("click", () => {
+    bar.querySelector("#proj-new-form").classList.toggle("hidden");
+    bar.querySelector("#proj-new-name").focus();
+  });
+  bar.querySelector("#proj-new-create").addEventListener("click", async () => {
+    const name = bar.querySelector("#proj-new-name").value.trim();
+    if (!name) return;
+    await createProject(name);
+  });
+  return bar;
+}
+
+async function createProject(name) {
+  if (apiLive) {
+    try {
+      const project = await apiSend("POST", "/projects", { name, notes: "" });
+      state.projects = await loadProjects();
+      state.projectFilter = project.id;
+    } catch (err) {
+      toast("Project failed: " + err.message);
+      return;
+    }
+  } else {
+    const project = {
+      id: `demo-project-${Date.now()}`,
+      name,
+      notes: "",
+      created_at: new Date().toISOString(),
+      track_count: 0,
+      track_ids: [],
+    };
+    state.projects.push(project);
+    state.projectFilter = project.id;
+    toast("Demo mode — project exists for this session only.");
+  }
+  renderLibrary();
+}
+
+function renderProjectHeader(project) {
+  const host = document.createElement("div");
+  host.className = "project-head panel";
+  const count = state.tracks.filter((t) => t.project_id === project.id).length;
+  host.innerHTML = `
+    <div class="project-head-top">
+      <input id="proj-name" class="project-name" type="text" value="${esc(project.name)}" maxlength="200" />
+      <span class="chip">${count} track${count === 1 ? "" : "s"}</span>
+      <button class="ghost-btn" id="proj-delete">Delete project</button>
+    </div>
+    <label class="project-notes-label">Project notes
+      <textarea id="proj-notes" rows="3" placeholder="What is this project? What is left to do?">${esc(project.notes || "")}</textarea>
+    </label>
+    <div class="project-head-actions">
+      <button class="cta-btn" id="proj-save">Save project</button>
+      <span class="player-note">Deleting a project keeps its tracks — they go back to Unsorted.</span>
+    </div>`;
+  host.querySelector("#proj-save").addEventListener("click", async () => {
+    const name = host.querySelector("#proj-name").value.trim() || project.name;
+    const notes = host.querySelector("#proj-notes").value;
+    if (apiLive) {
+      try {
+        await apiSend("PATCH", `/projects/${project.id}`, { name, notes });
+        state.projects = await loadProjects();
+        toast("Project saved.");
+      } catch (err) {
+        toast("Save failed: " + err.message);
+        return;
+      }
+    } else {
+      project.name = name;
+      project.notes = notes;
+      toast("Demo mode — saved for this session only.");
+    }
+    renderLibrary();
+  });
+  host.querySelector("#proj-delete").addEventListener("click", async () => {
+    if (apiLive) {
+      try {
+        await apiSend("DELETE", `/projects/${project.id}`);
+        state.projects = await loadProjects();
+      } catch (err) {
+        toast("Delete failed: " + err.message);
+        return;
+      }
+    } else {
+      state.projects = state.projects.filter((p) => p.id !== project.id);
+      for (const t of state.tracks) if (t.project_id === project.id) t.project_id = null;
+    }
+    state.projectFilter = "all";
+    toast("Project deleted — its tracks are now Unsorted.");
+    renderLibrary();
+  });
+  return host;
 }
 
 async function renderLibrary() {
@@ -289,18 +655,33 @@ async function renderLibrary() {
 
   // Load telemetry for every track (parallel) so rows can classify by mood/energy.
   state.telemetry = {};
-  let analyses = 0;
   await Promise.all(
     state.tracks.map(async (t) => {
       const tel = await loadAnalysis(t.id);
-      if (tel) {
-        state.telemetry[t.id] = tel;
-        analyses++;
-      }
+      if (tel) state.telemetry[t.id] = tel;
     })
   );
 
   renderBillboard();
+  carousels.appendChild(renderLibraryControls());
+
+  const sorted = (list) => sortTracks(list, state.telemetry, state.sortKey, state.sortDir);
+
+  if (state.projectFilter === "unsorted") {
+    const unsorted = state.tracks.filter((t) => !t.project_id);
+    carousels.appendChild(makeRow("Unsorted", "tracks with no project", sorted(unsorted)));
+    return;
+  }
+  if (state.projectFilter !== "all") {
+    const project = state.projects.find((p) => p.id === state.projectFilter);
+    if (project) {
+      carousels.appendChild(renderProjectHeader(project));
+      const mine = state.tracks.filter((t) => t.project_id === project.id);
+      carousels.appendChild(makeRow(project.name, "project tracks", sorted(mine)));
+      return;
+    }
+    state.projectFilter = "all"; // stale filter — fall through to all
+  }
 
   const energy = (t) => energyOf(state.telemetry[t.id]);
   const recent = [...state.tracks].sort(
@@ -308,7 +689,7 @@ async function renderLibrary() {
   );
 
   carousels.appendChild(
-    makeRow("Your library", `${state.tracks.length} track${state.tracks.length === 1 ? "" : "s"}`, state.tracks)
+    makeRow("Your library", `${state.tracks.length} track${state.tracks.length === 1 ? "" : "s"}`, sorted(state.tracks))
   );
   const high = state.tracks.filter((t) => (energy(t) ?? 0) >= 0.6);
   if (high.length) carousels.appendChild(makeRow("High energy", "arousal ≥ 60%", high));
@@ -333,16 +714,14 @@ async function renderLibrary() {
     const car = document.createElement("div");
     car.className = "carousel";
     for (const m of moodNames) {
-      const wrap = document.createElement("div");
-      wrap.style.minWidth = "220px";
-      wrap.innerHTML = `<div class="chip" style="margin-bottom:8px;display:inline-block">${esc(m)}</div>`;
-      wrap.appendChild(trackCard(byMood[m][0]));
-      car.appendChild(wrap);
-      for (const t of byMood[m].slice(1)) {
-        const w2 = document.createElement("div");
-        w2.style.minWidth = "220px";
-        w2.appendChild(trackCard(t));
-        car.appendChild(w2);
+      for (const t of byMood[m]) {
+        const wrap = document.createElement("div");
+        wrap.style.minWidth = "220px";
+        if (t === byMood[m][0]) {
+          wrap.innerHTML = `<div class="chip" style="margin-bottom:8px;display:inline-block">${esc(m)}</div>`;
+        }
+        wrap.appendChild(trackCard(t));
+        car.appendChild(wrap);
       }
     }
     block.appendChild(car);
@@ -433,19 +812,27 @@ function stopDetail() {
   if (d.engine) d.engine.pause();
   if (d.raf) cancelAnimationFrame(d.raf);
   state.detail = null;
+  fx.chain = null;
+  fx.ctx = null;
 }
 
 async function openDetail(trackId) {
   stopDetail();
   state.lastTrackId = trackId;
-  const track = state.tracks.find((t) => t.id === trackId) || DEMO_TRACK;
+  const track =
+    state.tracks.find((t) => t.id === trackId) ||
+    (appMode === "demo" ? DEMO_TRACK : null);
+  if (!track) {
+    toast("Track not found in the live library.");
+    return;
+  }
   const telemetry = await loadAnalysis(trackId);
   // Prefer the real uploaded recording when the API can serve it;
   // otherwise fall back to the synthesized stand-in.
   let audioUrl = null;
   if (apiLive && telemetry) {
     try {
-      const r = await fetch(`${API_BASE}/tracks/${trackId}/audio`, { method: "HEAD" });
+      const r = await fetch(`${API_BASE}/tracks/${trackId}/audio`, { method: "HEAD", headers: apiHeaders() });
       if (r.ok) audioUrl = `${API_BASE}/tracks/${trackId}/audio`;
     } catch {
       /* fall through to synth */
@@ -464,11 +851,40 @@ class RealAudioEngine {
     this._lastChord = null;
     this.el.preload = "auto";
     this.el.addEventListener("ended", () => this.onended && this.onended());
+    this.ctx = null;
+    this.onfxready = null; // (ctx, sourceNode) hook for the Phase I EQ chain
+    this.onchord = null;
+    this.onended = null;
   }
   get playing() {
     return !this.el.paused;
   }
+  _ensureGraph() {
+    if (this.ctx) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      const src = this.ctx.createMediaElementSource(this.el);
+      this._fxIn = this.ctx.createGain();
+      src.connect(this._fxIn);
+      this._fxIn.connect(this.ctx.destination);
+      if (this.onfxready) this.onfxready(this.ctx, this._fxIn);
+    } catch {
+      this.ctx = null; // element keeps playing direct; FX is enhancement-only
+    }
+  }
+  /* Phase H preview: playbackRate resampling is a COUPLED preview (pitch
+     and speed move together) — the rendered export applies them
+     independently. */
+  setAdjust({ semitones = 0, speed = 1 } = {}) {
+    try {
+      this.el.preservesPitch = false;
+    } catch { /* older engines */ }
+    this.el.playbackRate = coupledPlaybackRate(semitones, speed);
+  }
   play() {
+    this._ensureGraph();
+    if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
     return this.el.play();
   }
   pause() {
@@ -482,7 +898,7 @@ class RealAudioEngine {
     return this.el.currentTime;
   }
   setDeck() {
-    /* no-op: the recording is the full mix; stems come with separation */
+    /* no-op: single-source playback of the recording */
   }
   _syncChord() {
     const t = this.el.currentTime;
@@ -507,13 +923,14 @@ function renderDetail(track, telemetry, audioUrl) {
     const art0 = artworkUrl(track);
     host.innerHTML = `
       <div class="detail-head">
-        <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${art0 ? `<img class="cover-img" src="${art0}" alt="" onerror="this.remove()">` : ""}<span class="cover-glyph">♪</span></div>
+        <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${art0 ? `<img class="cover-img" src="${art0}" alt="">` : ""}<span class="cover-glyph">♪</span></div>
         <div><h1>${esc(track.title)}</h1><p class="artist">${esc(track.artist)}</p></div>
       </div>
       <div class="panel"><h2>Analysis pending</h2>
         <p class="panel-sub">This track hasn't been analyzed yet.</p>
         <p style="color:var(--muted);font-size:14px">Run the analysis pipeline to generate its telemetry bundle — BPM, key, segments, chords, rhyme map, and essay will appear here.</p>
       </div>`;
+    wireImgFallback(host);
     return;
   }
 
@@ -522,9 +939,30 @@ function renderDetail(track, telemetry, audioUrl) {
     .map((g) => `<span class="chip">${esc(g.name)} · ${Math.round(g.confidence * 100)}%</span>`)
     .join("");
 
+  const vp = telemetry.vocal_profile;
+  const vocalHtml = vp
+    ? `<div class="tele-grid">
+         <div class="tele-cell"><div class="k">Mean pitch</div><div class="v">${vp.f0_mean_hz} <small>Hz</small></div></div>
+         <div class="tele-cell"><div class="k">Pitch range</div><div class="v">${vp.f0_range_semitones} <small>st</small></div></div>
+         <div class="tele-cell"><div class="k">Vibrato</div><div class="v">${vp.vibrato_rate_hz} <small>Hz</small></div></div>
+         <div class="tele-cell"><div class="k">Autotune · heuristic</div><div class="v">${Math.round(vp.autotune_likelihood * 100)}<small>%</small></div></div>
+       </div>
+       <p class="player-note">Autotune likelihood is a heuristic score, not a verdict — see the full report for method notes.</p>`
+    : `<p class="essay">${esc(telemetry.vocal_note || "No vocal profile was measured for this track.")}</p>`;
+  const keyConfCell =
+    typeof telemetry.key_confidence === "number"
+      ? `<div class="tele-cell"><div class="k">Key confidence</div><div class="v">${Math.round(telemetry.key_confidence * 100)}<small>%</small></div></div>`
+      : "";
+  const mm = telemetry.mix_measurements;
+  const mixCells = mm
+    ? `<div class="tele-cell"><div class="k">Peak</div><div class="v">${mm.peak_dbfs} <small>dBFS</small></div></div>
+       <div class="tele-cell"><div class="k">Crest</div><div class="v">${mm.crest_db} <small>dB</small></div></div>
+       <div class="tele-cell"><div class="k">Sub share</div><div class="v">${mm.sub_pct}<small>%</small></div></div>`
+    : "";
+
   host.innerHTML = `
     <div class="detail-head">
-      <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${artworkUrl(track) ? `<img class="cover-img" src="${artworkUrl(track)}" alt="" onerror="this.remove()">` : ""}<span class="cover-glyph">♪</span></div>
+      <div class="detail-cover" style="--h1:${h1};--h2:${h2}">${artworkUrl(track) ? `<img class="cover-img" src="${artworkUrl(track)}" alt="">` : ""}<span class="cover-glyph">♪</span></div>
       <div>
         <h1>${esc(track.title)}</h1>
         <p class="artist">${esc(track.artist)}</p>
@@ -534,6 +972,17 @@ function renderDetail(track, telemetry, audioUrl) {
           <span class="chip">${esc(telemetry.rhyme_scheme_summary)} rhyme</span>
           ${genres}
         </div>
+        ${apiLive ? `<div class="detail-actions"><button class="ghost-btn report-btn" id="report-btn">⭳ Analysis report (print / PDF)</button></div>` : ""}
+        ${(() => {
+          const others = state.tracks.filter((t) => t.id !== track.id && state.telemetry[t.id]);
+          if (!others.length) return "";
+          return `<div class="detail-actions cmp-actions">
+            <label>Compare with
+              <select id="cmp-select">${others.map((t) => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("")}</select>
+            </label>
+            <button class="ghost-btn" id="cmp-open">⇄ Compare</button>
+          </div>`;
+        })()}
       </div>
     </div>
 
@@ -555,14 +1004,71 @@ function renderDetail(track, telemetry, audioUrl) {
       <div class="chord-strip" id="chord-strip"></div>
       <p class="player-note">${audioUrl
         ? "Playing your uploaded recording — waveform, chords, and lyrics stay synced to its measured telemetry."
-        : "Audio is synthesized live from the track's measured chords &amp; tempo — a stand-in until the ingestion pipeline ships real stems."} Click the waveform or any lyric line to seek.</p>
+        : "Audio is synthesized live from the track's measured chords &amp; tempo — a stand-in when no recording is available."} Click the waveform or any lyric line to seek.</p>
+    </div>
+
+    <div class="detail-grid">
+      <div>
+        <div class="panel">
+          <h2>Pitch &amp; speed</h2>
+          <p class="panel-sub">Preview is a coupled resample; the rendered export applies pitch and speed independently</p>
+          <div class="fx-row">
+            <label>Semitones <b id="adj-semi-val">+0.0 st</b>
+              <input id="adj-semi" type="range" min="-12" max="12" step="0.5" value="0" />
+            </label>
+            <label>Speed <b id="adj-speed-val">1.00×</b>
+              <input id="adj-speed" type="range" min="0.5" max="2" step="0.05" value="1" />
+            </label>
+            <button class="ghost-btn" id="adj-reset">Reset</button>
+          </div>
+          <p class="player-note" id="adj-derived"></p>
+          ${apiLive ? `<div class="fx-row">
+            <button class="cta-btn" id="adj-render">Render adjusted audio</button>
+            <audio id="adj-audio" class="hidden" controls preload="none"></audio>
+          </div>
+          <p class="player-note">Rendered with librosa (pitch shift + time stretch, independently) and cached on the server. The original file and its analysis are never modified.</p>` : ""}
+        </div>
+        <div class="panel">
+          <h2>EQ · playback only</h2>
+          <p class="panel-sub">Six-band parametric EQ on what you hear — never on the file or its analysis</p>
+          <div class="eq-presets" id="eq-presets">
+            ${Object.keys(EQ_PRESETS).map((name) => `<button class="chip eq-preset${fx.settings.preset === name ? " active" : ""}" data-preset="${esc(name)}">${esc(name)}</button>`).join("")}
+            <label class="eq-bypass"><input type="checkbox" id="eq-bypass" ${fx.settings.bypass ? "checked" : ""} /> Bypass</label>
+          </div>
+          <canvas id="eq-curve" width="640" height="150"></canvas>
+          <div id="eq-bands"></div>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <h2>Mix suggestions</h2>
+          <p class="panel-sub">Fired by deterministic rules over measured values — each quotes its evidence</p>
+          <div id="sugg-list"></div>
+        </div>
+        <div class="panel">
+          <h2>Organization</h2>
+          <p class="panel-sub">Project &amp; notes — saved with the track</p>
+          <label class="org-label">Project
+            <select id="org-project">
+              <option value="">No project (Unsorted)</option>
+              ${state.projects.map((p) => `<option value="${esc(p.id)}"${track.project_id === p.id ? " selected" : ""}>${esc(p.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="org-label">Track notes
+            <textarea id="org-notes" rows="3" placeholder="Mix notes, version context, TODOs…">${esc(track.notes || "")}</textarea>
+          </label>
+          <button class="cta-btn" id="org-save">Save</button>
+        </div>
+      </div>
     </div>
 
     <div class="detail-grid">
       <div>
         <div class="panel">
           <h2>Lyrics · time-synced</h2>
-          <p class="panel-sub">Click a line to seek · rhyme tags follow the ${esc(telemetry.rhyme_scheme_summary)} scheme</p>
+          <p class="panel-sub">${(telemetry.timestamped_lyrics || []).length
+            ? "Lyric sheet supplied with the track · click a line to seek"
+            : "No lyric sheet supplied with this track"}</p>
           <div class="lyrics" id="lyrics"></div>
         </div>
         <div class="panel">
@@ -580,11 +1086,22 @@ function renderDetail(track, telemetry, audioUrl) {
             <div class="tele-cell"><div class="k">Key</div><div class="v">${esc(telemetry.musical_key)} <small>${esc(telemetry.mode)}</small></div></div>
             <div class="tele-cell"><div class="k">Length</div><div class="v">${fmtTime(telemetry.duration)}</div></div>
             <div class="tele-cell"><div class="k">Sections</div><div class="v">${telemetry.segments.length}</div></div>
+            ${keyConfCell}
+            ${mixCells}
           </div>
           <div id="moods"></div>
         </div>
+        <div class="panel">
+          <h2>Vocal forensics</h2>
+          <p class="panel-sub">Measured pitch behavior — heuristics labeled as heuristics</p>
+          ${vocalHtml}
+        </div>
       </div>
     </div>`;
+
+  wireImgFallback(host);
+  const reportBtn = host.querySelector("#report-btn");
+  if (reportBtn) reportBtn.addEventListener("click", () => openReport(track.id));
 
   // Moods
   const moodsEl = host.querySelector("#moods");
@@ -601,13 +1118,14 @@ function renderDetail(track, telemetry, audioUrl) {
   // Lyrics
   const lyricsEl = host.querySelector("#lyrics");
   const lines = telemetry.timestamped_lyrics || [];
-  lyricsEl.innerHTML = lines
+  lyricsEl.innerHTML = lines.length
+    ? lines
     .map((l, i) => {
       const conf = typeof l.confidence === "number" ? l.confidence : null;
       const low = conf !== null && conf < 0.5;
       return `
       <div class="lyric-line${low ? " lowconf" : ""}" data-i="${i}"${
-        conf !== null ? ` title="transcription confidence ${Math.round(conf * 100)}%"` : ""
+        conf !== null ? ` title="line confidence ${Math.round(conf * 100)}%"` : ""
       }>
         <span class="ts">${fmtTime(l.start)} → ${fmtTime(l.end)}</span>
         <span class="txt">${esc(l.text)}</span>
@@ -615,7 +1133,8 @@ function renderDetail(track, telemetry, audioUrl) {
         <span class="rhyme">${esc(l.rhyme)}</span>
       </div>`;
     })
-    .join("");
+    .join("")
+    : `<p class="essay">${esc(telemetry.lyrics_note || "No lyric sheet was supplied for this track.")}</p>`;
   const lineEls = [...lyricsEl.querySelectorAll(".lyric-line")];
 
   // Segments legend
@@ -710,6 +1229,141 @@ function renderDetail(track, telemetry, audioUrl) {
 
   state.detail = { track, telemetry, engine, peaks, activeLyric: -1, activeSeg: -1 };
 
+  /* ---- Phase E: compare entry ---- */
+  const cmpOpen = host.querySelector("#cmp-open");
+  if (cmpOpen) {
+    cmpOpen.addEventListener("click", () => {
+      const other = host.querySelector("#cmp-select").value;
+      if (other) openCompare(track.id, other);
+    });
+  }
+
+  /* ---- Phase G: mix suggestions ---- */
+  const suggHost = host.querySelector("#sugg-list");
+  if (suggHost) {
+    const suggs = telemetry.suggestions || [];
+    suggHost.innerHTML = suggs.length
+      ? suggs
+          .map(
+            (s) => `<div class="sugg sugg-${esc(s.severity)}">
+              <div class="sugg-top"><span class="chip sev-chip sev-${esc(s.severity)}">${esc(s.severity)}</span><b>${esc(s.area)}</b></div>
+              <p class="sugg-text">${esc(s.suggestion)}</p>
+              <p class="sugg-why">Why: ${esc(s.why)}</p>
+            </div>`
+          )
+          .join("")
+      : `<p class="essay">${telemetry.mix_measurements ? "No rules fired — every measured axis sits within its threshold." : "Mix measurements weren't recorded for this analysis."}</p>`;
+  }
+
+  /* ---- Phase F: organization (project + notes) ---- */
+  const orgSave = host.querySelector("#org-save");
+  if (orgSave) {
+    orgSave.addEventListener("click", async () => {
+      const projectId = host.querySelector("#org-project").value || null;
+      const notes = host.querySelector("#org-notes").value;
+      if (apiLive) {
+        try {
+          const updated = await apiSend("PATCH", `/tracks/${track.id}`, {
+            project_id: projectId,
+            notes,
+          });
+          Object.assign(track, updated);
+          state.projects = await loadProjects();
+          toast("Track saved.");
+        } catch (err) {
+          toast("Save failed: " + err.message);
+        }
+      } else {
+        track.project_id = projectId;
+        track.notes = notes;
+        toast("Demo mode — saved for this session only.");
+      }
+    });
+  }
+
+  /* ---- Phase H: pitch & speed ---- */
+  fx.adjust = { semitones: 0, speed: 1 };
+  engine.onfxready = attachFx;
+  const semiEl = host.querySelector("#adj-semi");
+  const speedEl = host.querySelector("#adj-speed");
+  if (semiEl && speedEl) {
+    const semiVal = host.querySelector("#adj-semi-val");
+    const speedVal = host.querySelector("#adj-speed-val");
+    const derived = host.querySelector("#adj-derived");
+    const applyAdjust = () => {
+      fx.adjust = clampAdjust(parseFloat(semiEl.value), parseFloat(speedEl.value));
+      semiVal.textContent = `${fx.adjust.semitones >= 0 ? "+" : ""}${fx.adjust.semitones.toFixed(1)} st`;
+      speedVal.textContent = `${fx.adjust.speed.toFixed(2)}×`;
+      derived.textContent =
+        `Derived from the measured analysis (not re-measured): ` +
+        `${effectiveBpm(telemetry.bpm, fx.adjust.speed)} BPM · ` +
+        `${transposeKey(telemetry.musical_key, fx.adjust.semitones)} ${telemetry.mode}`;
+      if (engine.setAdjust) engine.setAdjust(fx.adjust);
+    };
+    semiEl.addEventListener("input", applyAdjust);
+    speedEl.addEventListener("input", applyAdjust);
+    host.querySelector("#adj-reset").addEventListener("click", () => {
+      semiEl.value = "0";
+      speedEl.value = "1";
+      applyAdjust();
+    });
+    applyAdjust();
+    const renderBtn = host.querySelector("#adj-render");
+    if (renderBtn) {
+      renderBtn.addEventListener("click", async () => {
+        const { semitones, speed } = fx.adjust;
+        const url = `${API_BASE}/tracks/${track.id}/adjusted?semitones=${semitones}&speed=${speed}`;
+        const audioEl = host.querySelector("#adj-audio");
+        renderBtn.disabled = true;
+        renderBtn.textContent = "Rendering…";
+        try {
+          let key = null;
+          try { key = localStorage.getItem("pythagora_api_key"); } catch { /* ignore */ }
+          if (key) {
+            const res = await fetch(url, { headers: apiHeaders() });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            audioEl.src = URL.createObjectURL(await res.blob());
+          } else {
+            audioEl.src = url;
+          }
+          audioEl.classList.remove("hidden");
+          await audioEl.play().catch(() => {});
+        } catch (err) {
+          toast("Render failed: " + err.message);
+        }
+        renderBtn.disabled = false;
+        renderBtn.textContent = "Render adjusted audio";
+      });
+    }
+  }
+
+  /* ---- Phase I: EQ wiring ---- */
+  renderEqControls();
+  drawEqCurve();
+  host.querySelectorAll(".eq-preset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      fx.settings.preset = btn.dataset.preset;
+      fx.settings.bands = presetBandState(btn.dataset.preset);
+      if (fx.chain) fx.chain.applySettings(fx.settings);
+      saveEqSettings(fx.settings);
+      host.querySelectorAll(".eq-preset").forEach((b) =>
+        b.classList.toggle("active", b === btn)
+      );
+      renderEqControls();
+      drawEqCurve();
+    });
+  });
+  const bypassEl = host.querySelector("#eq-bypass");
+  if (bypassEl) {
+    bypassEl.addEventListener("change", () => {
+      fx.settings.bypass = bypassEl.checked;
+      if (fx.chain) fx.chain.setBypass(bypassEl.checked);
+      saveEqSettings(fx.settings);
+      drawEqCurve();
+    });
+  }
+
+
   const loop = () => {
     const d = state.detail;
     if (!d) return;
@@ -743,10 +1397,196 @@ function renderDetail(track, telemetry, audioUrl) {
 }
 
 /* ------------------------------------------------------------------ */
+/* EQ controls + curve (Phase I)                                      */
+/* ------------------------------------------------------------------ */
+function drawEqCurve() {
+  const canvas = document.getElementById("eq-curve");
+  if (!canvas) return;
+  const g = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  g.clearRect(0, 0, w, h);
+  const N = 96;
+  const freqs = [];
+  for (let i = 0; i < N; i++) freqs.push(20 * Math.pow(16000 / 20, i / (N - 1)));
+  let db;
+  if (fx.settings.bypass) {
+    db = freqs.map(() => 0);
+  } else if (fx.chain && fx.ctx) {
+    db = fx.chain.getResponseDb(new Float32Array(freqs));
+  } else {
+    db = freqs.map((f) => combinedResponseDb(fx.settings.bands, f, 44100));
+  }
+  const range = 18;
+  const yOf = (v) => h / 2 - (Math.max(-range, Math.min(range, v)) / range) * (h / 2 - 8);
+  g.strokeStyle = "rgba(255,255,255,0.16)";
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0, yOf(0));
+  g.lineTo(w, yOf(0));
+  g.stroke();
+  g.strokeStyle = "#e50914";
+  g.lineWidth = 2;
+  g.beginPath();
+  freqs.forEach((f, i) => {
+    const x = (i / (N - 1)) * w;
+    const y = yOf(db[i]);
+    if (i) g.lineTo(x, y);
+    else g.moveTo(x, y);
+  });
+  g.stroke();
+  g.fillStyle = "rgba(255,255,255,0.45)";
+  g.font = "10px Inter, sans-serif";
+  g.fillText("20 Hz", 4, h - 6);
+  g.fillText("16 kHz", w - 38, h - 6);
+  g.fillText("+18 dB", 4, 12);
+}
+
+function renderEqControls() {
+  const host = document.getElementById("eq-bands");
+  if (!host) return;
+  host.innerHTML = EQ_BANDS.map((def, i) => {
+    const s = fx.settings.bands[i];
+    return `<div class="eq-band">
+      <div class="eq-band-head"><b>${esc(def.label)}</b><span>${esc(def.type)}</span></div>
+      <label>Freq <input type="range" class="eq-f" data-i="${i}" min="${def.fMin}" max="${def.fMax}" step="1" value="${s.f}" /><span class="eq-val eq-fval">${Math.round(s.f)} Hz</span></label>
+      <label>Gain <input type="range" class="eq-g" data-i="${i}" min="-15" max="15" step="0.5" value="${s.g}" /><span class="eq-val eq-gval">${(+s.g).toFixed(1)} dB</span></label>
+      ${def.type === "peaking" ? `<label>Q <input type="range" class="eq-q" data-i="${i}" min="0.3" max="4" step="0.1" value="${s.q}" /><span class="eq-val eq-qval">${(+s.q).toFixed(1)}</span></label>` : ""}
+    </div>`;
+  }).join("");
+  host.querySelectorAll("input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const i = +inp.dataset.i;
+      const bandState = fx.settings.bands[i];
+      if (inp.classList.contains("eq-f")) {
+        bandState.f = +inp.value;
+        inp.closest("label").querySelector(".eq-fval").textContent = `${Math.round(bandState.f)} Hz`;
+      }
+      if (inp.classList.contains("eq-g")) {
+        bandState.g = +inp.value;
+        inp.closest("label").querySelector(".eq-gval").textContent = `${bandState.g.toFixed(1)} dB`;
+      }
+      if (inp.classList.contains("eq-q")) {
+        bandState.q = +inp.value;
+        inp.closest("label").querySelector(".eq-qval").textContent = bandState.q.toFixed(1);
+      }
+      fx.settings.preset = "Custom";
+      document.querySelectorAll(".eq-preset").forEach((b) => b.classList.remove("active"));
+      if (fx.chain) fx.chain.setBand(i, bandState);
+      saveEqSettings(fx.settings);
+      drawEqCurve();
+    });
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Track comparison (Phase E)                                         */
+/* ------------------------------------------------------------------ */
+function localComparison(aId, bId) {
+  const ta = state.tracks.find((t) => t.id === aId);
+  const tb = state.tracks.find((t) => t.id === bId);
+  const A = state.telemetry[aId];
+  const B = state.telemetry[bId];
+  if (!ta || !tb || !A || !B) return null;
+  const lvl = (t, f) => (t.mix_measurements ? t.mix_measurements[f] : null);
+  const vocal = (t) =>
+    t.vocal_profile
+      ? `F0 mean ${Math.round(t.vocal_profile.f0_mean_hz)} Hz · voiced ${Math.round(t.vocal_profile.voiced_fraction * 100)}%`
+      : t.vocal_note || "Not measured";
+  const rows = [];
+  const row = (field, label, a, b, delta) =>
+    rows.push({ field, label, a, b, delta: delta === undefined ? null : delta, different: a !== b });
+  row("duration", "Duration (s)", A.duration, B.duration, Math.round((B.duration - A.duration) * 10) / 10);
+  row("bpm", "Tempo (BPM)", A.bpm, B.bpm, Math.round((B.bpm - A.bpm) * 10) / 10);
+  row("key", "Key", `${A.musical_key} ${A.mode}`, `${B.musical_key} ${B.mode}`);
+  row("key_confidence", "Key confidence", A.key_confidence ?? null, B.key_confidence ?? null);
+  row("peak_dbfs", "Peak (dBFS)", lvl(A, "peak_dbfs"), lvl(B, "peak_dbfs"));
+  row("crest_db", "Crest / dynamics (dB)", lvl(A, "crest_db"), lvl(B, "crest_db"));
+  row("sub_pct", "Sub-bass share (%)", lvl(A, "sub_pct"), lvl(B, "sub_pct"));
+  row("segments", "Sections", (A.segments || []).length, (B.segments || []).length);
+  row("unique_chords", "Unique chords", (A.chords || []).length, (B.chords || []).length);
+  row("vocal", "Vocal forensics", vocal(A), vocal(B));
+  row("suggestions", "Mix suggestions", (A.suggestions || []).length, (B.suggestions || []).length);
+  const chordsA = A.chords || [];
+  const chordsB = B.chords || [];
+  return {
+    a: { id: ta.id, title: ta.title, artist: ta.artist },
+    b: { id: tb.id, title: tb.title, artist: tb.artist },
+    rows,
+    chords: {
+      shared: chordsA.filter((c) => chordsB.includes(c)),
+      only_a: chordsA.filter((c) => !chordsB.includes(c)),
+      only_b: chordsB.filter((c) => !chordsA.includes(c)),
+    },
+    summary: {
+      fields_compared: rows.length,
+      fields_different: rows.filter((r) => r.different).length,
+    },
+  };
+}
+
+function renderComparisonTable(cmp) {
+  const fmt = (v) => (v === null || v === undefined ? "—" : typeof v === "number" ? String(Math.round(v * 100) / 100) : esc(String(v)));
+  const rows = cmp.rows
+    .map(
+      (r) => `<tr class="${r.different ? "diff" : ""}"><td>${esc(r.label)}</td><td>${fmt(r.a)}</td><td>${fmt(r.b)}</td></tr>`
+    )
+    .join("");
+  return `
+    <p class="panel-sub">${cmp.summary.fields_different} of ${cmp.summary.fields_compared} compared measurements differ.</p>
+    <table class="cmp-table">
+      <tr><th>Measurement</th><th>${esc(cmp.a.title)}</th><th>${esc(cmp.b.title)}</th></tr>
+      ${rows}
+    </table>
+    <p class="player-note">Shared chords: ${esc(cmp.chords.shared.join(", ") || "none")} ·
+    only ${esc(cmp.a.title)}: ${esc(cmp.chords.only_a.join(", ") || "—")} ·
+    only ${esc(cmp.b.title)}: ${esc(cmp.chords.only_b.join(", ") || "—")}</p>`;
+}
+
+async function openCompare(aId, bId) {
+  state.comparePair = { a: aId, b: bId };
+  const modal = document.getElementById("compare-modal");
+  const content = document.getElementById("cmp-content");
+  modal.classList.remove("hidden");
+  content.innerHTML = `<p class="panel-sub">Loading comparison…</p>`;
+  let cmp = null;
+  if (apiLive) {
+    try {
+      cmp = await apiGet(`/tracks/compare?a=${encodeURIComponent(aId)}&b=${encodeURIComponent(bId)}`);
+    } catch { /* fall through to local */ }
+  }
+  if (!cmp) cmp = localComparison(aId, bId);
+  if (!cmp) {
+    content.innerHTML = `<p class="essay">Comparison needs both tracks to be analyzed.</p>`;
+    return;
+  }
+  document.getElementById("cmp-title").textContent = `${cmp.a.title} vs ${cmp.b.title}`;
+  content.innerHTML = renderComparisonTable(cmp);
+  document.getElementById("cmp-report").classList.toggle("hidden", !apiLive);
+}
+
+function wireCompareModal() {
+  const modal = document.getElementById("compare-modal");
+  const close = () => modal.classList.add("hidden");
+  document.getElementById("cmp-close").addEventListener("click", close);
+  document.getElementById("cmp-done").addEventListener("click", close);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) close();
+  });
+  document.getElementById("cmp-report").addEventListener("click", () => {
+    if (!state.comparePair) return;
+    const { a, b } = state.comparePair;
+    openApiPage(`${API_BASE}/tracks/compare/report?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Upload + job tracking — drag & drop ingest with live previews      */
 /* ------------------------------------------------------------------ */
-const upState = { audioFile: null, artFile: null, artUrl: null };
+const upState = { audioFiles: [], artFile: null, artUrl: null };
 
+/* Fallback stage list — mirrors workers/pipeline.py STAGES. The live
+   job payload's own `stages` array takes precedence when present. */
 const PIPE_STAGES = [
   "Loading audio",
   "Measuring tempo & key",
@@ -754,9 +1594,11 @@ const PIPE_STAGES = [
   "Mapping sections & texture",
   "Rendering waveform",
   "Vocal forensics",
-  "Transcribing lyrics",
+  "Measuring mix & suggestions",
   "Finalizing",
 ];
+
+const AUDIO_EXT_RE = /\.(mp3|wav|ogg|flac|m4a|aac)$/i;
 
 function syncPreview() {
   const t = document.getElementById("up-title").value.trim() || "Untitled";
@@ -782,15 +1624,38 @@ function drawMiniWave(canvas, peaks) {
   });
 }
 
-async function handleAudioFile(file) {
-  if (!/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(file.name)) {
-    toast("Unsupported audio type.");
-    return;
-  }
-  upState.audioFile = file;
+function titleFromFilename(name) {
+  return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || "Untitled";
+}
+
+function renderFileList() {
+  const host = document.getElementById("up-file-list");
+  const files = upState.audioFiles;
+  host.classList.toggle("hidden", files.length === 0);
+  host.innerHTML = files
+    .map(
+      (f, i) => `<div class="up-file-row">
+        <span class="up-file-name">${esc(f.name)}</span>
+        <span class="up-file-size">${(f.size / 1048576).toFixed(1)} MB</span>
+        <button class="dz-clear up-file-x" data-i="${i}" aria-label="Remove file">×</button>
+      </div>`
+    )
+    .join("");
+  host.querySelectorAll(".up-file-x").forEach((btn) =>
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      upState.audioFiles.splice(+btn.dataset.i, 1);
+      if (!upState.audioFiles.length) clearAudio();
+      else renderFileList();
+    })
+  );
+}
+
+async function previewFirstFile(file) {
   document.getElementById("up-audio-idle").classList.add("hidden");
   document.getElementById("up-audio-file").classList.remove("hidden");
-  document.getElementById("up-audio-name").textContent = file.name;
+  document.getElementById("up-audio-name").textContent =
+    upState.audioFiles.length > 1 ? `${file.name} (+${upState.audioFiles.length - 1} more)` : file.name;
   document.getElementById("up-audio-sub").textContent = "decoding…";
   try {
     const ab = await file.arrayBuffer();
@@ -811,10 +1676,8 @@ async function handleAudioFile(file) {
     drawMiniWave(document.getElementById("up-wave"), peaks);
     document.getElementById("up-audio-sub").textContent =
       `${fmtTime(buf.duration)} · ${(file.size / 1048576).toFixed(1)} MB`;
-    if (!document.getElementById("up-title").value.trim()) {
-      document.getElementById("up-title").value = file.name
-        .replace(/\.[^.]+$/, "")
-        .replace(/[_-]+/g, " ");
+    if (upState.audioFiles.length === 1 && !document.getElementById("up-title").value.trim()) {
+      document.getElementById("up-title").value = titleFromFilename(file.name);
       syncPreview();
     }
     ac.close();
@@ -823,7 +1686,20 @@ async function handleAudioFile(file) {
   }
 }
 
+function handleAudioFiles(fileList) {
+  const files = [...fileList].filter((f) => AUDIO_EXT_RE.test(f.name));
+  if (!files.length) {
+    toast("Unsupported audio type.");
+    return;
+  }
+  if (files.length !== fileList.length) toast("Skipped non-audio files.");
+  upState.audioFiles = files;
+  renderFileList();
+  previewFirstFile(files[0]);
+}
+
 function handleArtFile(file) {
+  if (!file) return;
   if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
     toast("Unsupported image type.");
     return;
@@ -846,10 +1722,11 @@ function handleArtFile(file) {
 }
 
 function clearAudio() {
-  upState.audioFile = null;
+  upState.audioFiles = [];
   document.getElementById("up-audio").value = "";
   document.getElementById("up-audio-idle").classList.remove("hidden");
   document.getElementById("up-audio-file").classList.add("hidden");
+  renderFileList();
 }
 
 function clearArt() {
@@ -871,6 +1748,7 @@ function resetUploadModal() {
   document.getElementById("up-form").classList.remove("hidden");
   document.getElementById("up-progress").classList.add("hidden");
   document.getElementById("up-back").classList.add("hidden");
+  document.getElementById("up-queue").innerHTML = "";
   const btn = document.getElementById("up-submit");
   btn.disabled = false;
   btn.textContent = "Upload & analyze";
@@ -884,7 +1762,7 @@ function wireDropzone(dzId, inputId, handler) {
     if (!e.target.closest(".dz-clear")) input.click();
   });
   input.addEventListener("change", () => {
-    if (input.files[0]) handler(input.files[0]);
+    if (input.files.length) handler(input.files);
   });
   ["dragenter", "dragover"].forEach((ev) =>
     dz.addEventListener(ev, (e) => {
@@ -899,25 +1777,62 @@ function wireDropzone(dzId, inputId, handler) {
     })
   );
   dz.addEventListener("drop", (e) => {
-    const f = e.dataTransfer.files[0];
-    if (f) handler(f);
+    if (e.dataTransfer.files.length) handler(e.dataTransfer.files);
   });
 }
 
-function renderPipeStages() {
-  document.getElementById("up-stages").innerHTML = PIPE_STAGES.map(
-    (s) => `<li><span class="st-ic"></span><span>${s}</span></li>`
-  ).join("");
+/* Render a stage stepper from a job's own stage list (statuses come from
+   the API: pending | active | done | skipped). */
+function stageListHtml(stages) {
+  return stages
+    .map((s) => `<li class="${esc(s.status)}"><span class="st-ic"></span><span>${esc(s.name)}</span></li>`)
+    .join("");
 }
 
-function markPipeStages(stageLabel, allDone) {
-  const idx = allDone
-    ? PIPE_STAGES.length
-    : PIPE_STAGES.findIndex((s) => stageLabel.startsWith(s));
-  document.querySelectorAll("#up-stages li").forEach((li, i) => {
-    li.classList.toggle("done", i < idx);
-    li.classList.toggle("active", i === idx);
-  });
+function renderFocusedStages(job) {
+  const stages =
+    job && job.stages && job.stages.length
+      ? job.stages
+      : PIPE_STAGES.map((name) => ({ name, status: "pending" }));
+  document.getElementById("up-stages").innerHTML = stageListHtml(stages);
+  document.getElementById("up-prog-fill").style.width = `${job ? job.progress || 0 : 0}%`;
+}
+
+function queueCardHtml(entry) {
+  const job = entry.job;
+  const status = entry.error
+    ? `<span class="q-status q-failed">failed — ${esc(entry.error)}</span>`
+    : job
+      ? job.state === "done"
+        ? `<span class="q-status q-done">done</span>`
+        : job.state === "failed"
+          ? `<span class="q-status q-failed">failed — ${esc(job.error || "analysis error")}</span>`
+          : `<span class="q-status">${esc(job.stage || job.state)} · ${job.progress || 0}%${typeof job.elapsed_seconds === "number" ? ` · ${job.elapsed_seconds.toFixed(0)}s` : ""}</span>`
+      : `<span class="q-status">uploading…</span>`;
+  const stages = job && job.stages && job.stages.length ? job.stages : null;
+  return `
+    <div class="q-top"><b>${esc(entry.title)}</b>${status}</div>
+    <div class="q-bar"><div class="q-fill" style="width:${job ? job.progress || 0 : 0}%"></div></div>
+    ${stages ? `<ol class="pipe-stages q-stages">${stageListHtml(stages)}</ol>` : ""}
+    ${job && job.state === "done" ? `<button class="ghost-btn q-open" data-track="${esc(entry.trackId)}">Open track →</button>` : ""}`;
+}
+
+function renderQueue(entries) {
+  const host = document.getElementById("up-queue");
+  host.innerHTML = "";
+  for (const entry of entries) {
+    const card = document.createElement("div");
+    card.className = "q-card";
+    card.innerHTML = queueCardHtml(entry);
+    const openBtn = card.querySelector(".q-open");
+    if (openBtn) {
+      openBtn.addEventListener("click", () => {
+        document.getElementById("upload-modal").classList.add("hidden");
+        openDetail(entry.trackId);
+      });
+    }
+    host.appendChild(card);
+  }
 }
 
 function wireUpload() {
@@ -937,8 +1852,8 @@ function wireUpload() {
   modal.addEventListener("click", (e) => {
     if (e.target === modal) close();
   });
-  wireDropzone("up-audio-dz", "up-audio", handleAudioFile);
-  wireDropzone("up-art-dz", "up-artwork", handleArtFile);
+  wireDropzone("up-audio-dz", "up-audio", handleAudioFiles);
+  wireDropzone("up-art-dz", "up-artwork", (files) => handleArtFile(files[0]));
   document.getElementById("up-audio-clear").addEventListener("click", (e) => {
     e.stopPropagation();
     clearAudio();
@@ -962,76 +1877,123 @@ function wireUpload() {
 }
 
 async function submitUpload() {
-  if (!upState.audioFile) {
+  if (!upState.audioFiles.length) {
     toast("Drop an audio file first.");
     return;
   }
-  const fd = new FormData();
-  fd.append("title", document.getElementById("up-title").value.trim() || upState.audioFile.name);
-  fd.append("artist", document.getElementById("up-artist").value.trim() || "Unknown Artist");
-  fd.append("audio", upState.audioFile);
-  if (upState.artFile) fd.append("artwork", upState.artFile);
+  const files = [...upState.audioFiles];
+  const single = files.length === 1;
+  const artist = document.getElementById("up-artist").value.trim() || "Unknown Artist";
+  const formTitle = document.getElementById("up-title").value.trim();
 
   const btn = document.getElementById("up-submit");
   btn.disabled = true;
   btn.textContent = "Uploading…";
-  try {
-    const res = await fetch(API_BASE + "/tracks/upload", { method: "POST", body: fd });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { track, job_id } = await res.json();
-    pollJob(job_id, track);
-  } catch (err) {
-    toast("Upload failed: " + err.message);
-    btn.disabled = false;
-    btn.textContent = "Upload & analyze";
-  }
-}
 
-async function pollJob(jobId, track) {
   document.getElementById("up-form").classList.add("hidden");
   document.getElementById("up-progress").classList.remove("hidden");
-  renderPipeStages();
-  const fill = document.getElementById("up-prog-fill");
-  const sub = document.getElementById("up-prog-sub");
+  document.getElementById("up-prog-title").textContent =
+    files.length > 1 ? `Analyzing ${files.length} tracks…` : `Analyzing “${formTitle || titleFromFilename(files[0].name)}”`;
+  document.getElementById("up-prog-sub").textContent =
+    "Deterministic measurements, in order. Nothing is guessed.";
+  renderFocusedStages(null);
+
   const pill = document.getElementById("analyzing-pill");
   const pillLabel = document.getElementById("analyzing-label");
-  // Unmistakable global indicator: visible from any view, even if the modal closes.
   pill.classList.remove("hidden");
 
-  while (true) {
+  // Upload sequentially: each accepted file becomes a queued server job;
+  // a rejected file (bad content, oversize) fails its own card only.
+  const entries = [];
+  for (const file of files) {
+    const entry = {
+      file,
+      title: single && formTitle ? formTitle : titleFromFilename(file.name),
+      trackId: null,
+      jobId: null,
+      job: null,
+      error: null,
+    };
+    entries.push(entry);
+    renderQueue(entries);
+    const fd = new FormData();
+    fd.append("title", entry.title);
+    fd.append("artist", artist);
+    fd.append("audio", file);
+    if (single && upState.artFile) fd.append("artwork", upState.artFile);
     try {
-      const job = await apiGet(`/tracks/jobs/${jobId}`);
-      fill.style.width = `${job.progress || 0}%`;
-      if (job.state === "done") {
-        markPipeStages("", true);
-        sub.textContent = "Measurements locked. Opening your track…";
-        pill.classList.add("hidden");
-        state.tracks = await loadTracks();
-        await renderLibrary();
-        await sleep(900);
-        document.getElementById("upload-modal").classList.add("hidden");
-        openDetail(track.id);
-        return;
+      const res = await fetch(API_BASE + "/tracks/upload", {
+        method: "POST",
+        body: fd,
+        headers: apiHeaders(),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body && body.detail) detail = body.detail;
+        } catch { /* keep HTTP status */ }
+        throw new Error(detail);
       }
-      if (job.state === "failed") {
-        const err = job.error || "unknown error";
-        const decodeIssue = /format|decod|codec|ffmpeg|audioread|not recognised/i.test(err);
-        sub.innerHTML =
-          `<span class="pipe-error">Analysis failed.</span> ${esc(err)}` +
-          (decodeIssue
-            ? `<br><br>WAV files always decode. For MP3/M4A the server needs <code>ffmpeg</code> installed (<code>sudo apt-get install -y ffmpeg</code>).`
-            : "");
-        document.getElementById("up-back").classList.remove("hidden");
-        pill.classList.add("hidden");
-        return;
-      }
-      sub.textContent = job.stage || job.state;
-      pillLabel.textContent = job.stage || "Analyzing…";
-      markPipeStages(job.stage || "", false);
-    } catch {
-      /* transient — keep polling */
+      const { track, job_id } = await res.json();
+      entry.trackId = track.id;
+      entry.jobId = job_id;
+      entry.title = track.title;
+    } catch (err) {
+      entry.error = err.message;
     }
-    await sleep(1500);
+    renderQueue(entries);
+  }
+
+  await pollBatch(entries, pill, pillLabel);
+}
+
+async function pollBatch(entries, pill, pillLabel) {
+  const active = () => entries.filter((e) => e.jobId && (!e.job || !["done", "failed"].includes(e.job.state)));
+  while (true) {
+    const pending = active();
+    if (!pending.length) break;
+    await Promise.all(
+      pending.map(async (entry) => {
+        try {
+          entry.job = await apiGet(`/tracks/jobs/${entry.jobId}`);
+        } catch { /* transient — keep polling */ }
+      })
+    );
+    renderQueue(entries);
+    const focused = pending.find((e) => e.job && e.job.state === "running") || pending[0];
+    if (focused && focused.job) {
+      renderFocusedStages(focused.job);
+      pillLabel.textContent =
+        entries.length > 1
+          ? `Analyzing ${entries.filter((e) => e.job && e.job.state === "done").length}/${entries.length} tracks…`
+          : focused.job.stage || "Analyzing…";
+    }
+    await sleep(1200);
+  }
+  pill.classList.add("hidden");
+  renderQueue(entries);
+  const lastJob = [...entries].reverse().find((e) => e.job);
+  if (lastJob) renderFocusedStages(lastJob.job);
+  const doneCount = entries.filter((e) => e.job && e.job.state === "done").length;
+  const sub = document.getElementById("up-prog-sub");
+  if (doneCount) {
+    sub.textContent = `${doneCount} of ${entries.length} track${entries.length === 1 ? "" : "s"} measured and locked.`;
+    state.tracks = await loadTracks();
+    state.projects = await loadProjects();
+    await renderLibrary();
+  } else {
+    sub.innerHTML = `<span class="pipe-error">Nothing completed.</span> Check the per-file errors above.`;
+  }
+  document.getElementById("up-back").classList.remove("hidden");
+  const btn = document.getElementById("up-submit");
+  btn.disabled = false;
+  btn.textContent = "Upload & analyze";
+  // Single-track flow keeps its old habit: jump straight into the track.
+  if (entries.length === 1 && doneCount === 1) {
+    await sleep(900);
+    document.getElementById("upload-modal").classList.add("hidden");
+    openDetail(entries[0].trackId);
   }
 }
 /* ------------------------------------------------------------------ */
@@ -1056,6 +2018,8 @@ window.addEventListener(
 (async function init() {
   await checkApi();
   wireUpload();
+  wireCompareModal();
   state.tracks = await loadTracks();
+  state.projects = await loadProjects();
   await renderLibrary();
 })();
