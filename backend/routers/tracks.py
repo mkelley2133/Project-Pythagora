@@ -94,6 +94,27 @@ def _sniff_head(path: Path, size: int = 16384) -> bytes:
         return f.read(size)
 
 
+def _save_artwork_checked(artwork: UploadFile, track_id: str) -> Path:
+    """Save cover art under a server-generated name, verified by content.
+
+    Extension allowlist + byte cap (as before) PLUS a magic-byte check
+    that the content is the image type the extension claims — the
+    artwork counterpart of the audio sniff (SECURITY.md). On any
+    failure the partial file is removed and a clean 400/413 raised.
+    """
+    art_ext = _ext_of(artwork.filename, ALLOWED_ARTWORK, "artwork")
+    art_dest = ARTWORK_DIR / f"{track_id}{art_ext}"
+    _stream_to_file(artwork, art_dest, settings.max_artwork_bytes, "Artwork")
+    kind = security.sniff_image(_sniff_head(art_dest, 64))
+    if kind is None or art_ext not in security.IMAGE_KIND_EXTS.get(kind, ()):
+        art_dest.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Artwork content is not a valid image matching its file type (.jpg, .jpeg, .png, .webp).",
+        )
+    return art_dest
+
+
 @router.get("", response_model=list[TrackRecord])
 def list_tracks() -> list[TrackRecord]:
     return store.list_tracks()
@@ -169,15 +190,12 @@ def upload_track(
     audio_dest = AUDIO_DIR / f"{track_id}{canonical_ext}"
     tmp_dest.rename(audio_dest)
 
-    # 4) Optional artwork: extension allowlist + byte cap (content sniffing
-    #    for artwork is deferred — see SECURITY.md).
+    # 4) Optional artwork: extension allowlist + byte cap + magic-byte
+    #    content check (see _save_artwork_checked / SECURITY.md).
     artwork_path: str | None = None
     if artwork is not None and artwork.filename:
         try:
-            art_ext = _ext_of(artwork.filename, ALLOWED_ARTWORK, "artwork")
-            art_dest = ARTWORK_DIR / f"{track_id}{art_ext}"
-            _stream_to_file(artwork, art_dest, settings.max_artwork_bytes, "Artwork")
-            artwork_path = str(art_dest)
+            artwork_path = str(_save_artwork_checked(artwork, track_id))
         except HTTPException:
             audio_dest.unlink(missing_ok=True)
             raise
@@ -207,9 +225,7 @@ def upload_artwork(track_id: str, artwork: UploadFile = File(...)) -> TrackRecor
     track = store.get_track(track_id)
     if track is None:
         raise HTTPException(status_code=404, detail="Track not found")
-    art_ext = _ext_of(artwork.filename, ALLOWED_ARTWORK, "artwork")
-    art_dest = ARTWORK_DIR / f"{track_id}{art_ext}"
-    _stream_to_file(artwork, art_dest, settings.max_artwork_bytes, "Artwork")
+    art_dest = _save_artwork_checked(artwork, track_id)
     track.artwork_path = str(art_dest)
     return store.save_track(track)
 

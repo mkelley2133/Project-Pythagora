@@ -193,6 +193,33 @@ def sniff_audio(data: bytes) -> str | None:
     return None
 
 
+# Extensions each sniffed image kind may legitimately carry.
+IMAGE_KIND_EXTS: dict[str, tuple[str, ...]] = {
+    "jpeg": (".jpg", ".jpeg"),
+    "png": (".png",),
+    "webp": (".webp",),
+}
+
+
+def sniff_image(data: bytes) -> str | None:
+    """Identify an image format from its leading bytes, or None.
+
+    Magic-byte check only (the project carries no imaging library, so
+    there is no decode proof for artwork the way audio gets one); it
+    still stops mislabeled or non-image content riding an image
+    extension, which is the gap SECURITY.md had listed as deferred.
+    """
+    if len(data) < 12:
+        return None
+    if data[0:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[0:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
 # --------------------------------------------------------------------------
 # Decode + duration probing. soundfile first (no subprocess); ffprobe as a
 # fallback for containers libsndfile cannot read (e.g. M4A/AAC).

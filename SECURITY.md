@@ -19,6 +19,11 @@ _Last reviewed: 2026-10-12. Dependency audit (pip-audit) clean — see
       `backend/security.py::sniff_audio`. The client filename, extension,
       and Content-Type header are never trusted; the file is stored under
       the *sniffed* format's canonical extension.
+- [x] **Artwork content sniffing**: cover art is likewise verified by
+      magic bytes (`backend/security.py::sniff_image` — JPEG/PNG/WebP
+      signatures) and must match the extension it arrived with, on both
+      artwork routes. Magic bytes only: the project carries no imaging
+      library, so artwork gets no decode proof (audio does — see next).
 - [x] **Decode proof + duration cap**: uploads must actually decode
       (soundfile, falling back to ffprobe — subprocess with list args,
       never `shell=True`) and must not exceed
@@ -110,11 +115,6 @@ stack traces, report endpoint renders.
 
 ## Deferred (deliberate, with rationale)
 
-- [ ] **Artwork content sniffing** — artwork is extension-allowlisted and
-      size-capped but not magic-byte verified (the dashboard falls back to
-      gradient covers when art fails to load, and responses are served
-      with an explicit image media type + `nosniff`). Tighten before
-      allowing public artwork uploads from strangers.
 - [ ] **Malware scanning (ClamAV/CDR)** — OWASP recommends it for public
       upload services. Not wired: uploaded audio is only ever *decoded* by
       soundfile/ffmpeg/librosa and *served* back as audio; nothing is

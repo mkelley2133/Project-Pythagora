@@ -55,7 +55,6 @@ any narrative interpretation occurs.
 app/            FastAPI application entrypoint
 backend/
   config.py     Settings — everything secret comes from the environment
-  database.py   SQLAlchemy session manager (graceful fallback without it)
   models/       Pydantic schemas (track + telemetry bundles)
   routers/      API routes (/tracks, /tracks/{id}/analysis)
 workers/        Background pipeline + Celery task wrapper
@@ -64,7 +63,6 @@ workers/        Background pipeline + Celery task wrapper
                 Roman numerals, vocal forensics (F0, vibrato, pitch-
                 correction heuristic), waveform peak envelopes, mix
                 measurements + rule-fired suggestions
-training/       Model training pipeline configuration
 tests/          pytest suite
 frontend/       Dashboard: library carousels, dual-deck player, structural
               waveform timeline, time-synced lyrics (vanilla JS + Web Audio;
@@ -217,8 +215,7 @@ multi-worker deployments.
 
 The local analyzer is ported under `workers/analysis/`: `audio.py`
 (tempo/key/sections/texture/mood/style), `measure.py` (band energy,
-dBFS levels, stereo), `suggestions.py` (deterministic mix rules),
-`lyrics.py` (rhyme utilities for supplied lyric sheets).
+dBFS levels, stereo), `suggestions.py` (deterministic mix rules).
 
 Run the tests with `pytest`.
 

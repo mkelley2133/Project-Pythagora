@@ -88,12 +88,15 @@ def test_upload_starts_pipeline_and_produces_analysis():
 
 def test_upload_with_artwork_and_artwork_endpoint():
     wav = _synth_wav(seconds=4)
+    # Real PNG magic bytes — artwork is content-sniffed since the
+    # deep-dive pass (see tests/test_deep_dive.py for rejection cases).
+    png = b"\x89PNG\r\n\x1a\n" + b"fake-png-payload"
     r = client.post(
         "/tracks/upload",
         data={"title": "Art Test", "artist": "Test Bot"},
         files={
             "audio": ("test.wav", wav, "audio/wav"),
-            "artwork": ("cover.png", b"fake-png-bytes", "image/png"),
+            "artwork": ("cover.png", png, "image/png"),
         },
     )
     assert r.status_code == 202, r.text
@@ -102,7 +105,7 @@ def test_upload_with_artwork_and_artwork_endpoint():
 
     r = client.get(f"/tracks/{track_id}/artwork")
     assert r.status_code == 200
-    assert r.content == b"fake-png-bytes"
+    assert r.content == png
 
     _wait_job(job_id)
 
@@ -115,7 +118,7 @@ def test_artwork_upload_to_existing_track():
     track_id = r.json()["id"]
     r = client.post(
         f"/tracks/{track_id}/artwork",
-        files={"artwork": ("c.jpg", b"jpeg-bytes", "image/jpeg")},
+        files={"artwork": ("c.jpg", b"\xff\xd8\xff\xe0" + b"jpeg-payload", "image/jpeg")},
     )
     assert r.status_code == 200
     assert r.json()["artwork_path"]
