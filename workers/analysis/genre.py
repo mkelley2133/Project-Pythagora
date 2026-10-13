@@ -22,10 +22,14 @@ Honesty contract:
 - If the top genre probability is below LOW_CONFIDENCE_THRESHOLD, the
   primary genre reads "Mixed / uncertain" and the top candidates are
   still shown — no forced confident label.
-- An alternate decisive rule (top score >= 0.10 AND >= 1.5x the
-  runner-up) exists behind PYTHAGORA_GENRE_DECISIVE=1 for evaluation.
-  It is OFF by default; when it produces the primary label, the note
-  says so explicitly.
+- The decisive rule (top score >= 0.10 AND >= 1.5x the runner-up)
+  is the DEFAULT primary-genre rule (Marcus's decision, 2026-10-13:
+  a label must be accurate, not forced — a clear relative winner at a
+  plausible absolute level commits; thin evidence still reads
+  "Mixed / uncertain"). Set PYTHAGORA_GENRE_DECISIVE=0 to restore
+  strict-only behavior (primary requires the 0.35 threshold). When
+  the decisive rule produces the primary label, the note says so
+  explicitly.
 - If the model file is absent or fails to load/run, the stage degrades
   gracefully: primary_genre=None with an explicit note. An analysis
   never crashes over genre.
@@ -49,21 +53,23 @@ MODEL_ID = f"{MODEL_NAME} — {MODEL_VERSION}"
 # without labelling everything uncertain).
 LOW_CONFIDENCE_THRESHOLD = 0.35
 
-# Alternate "decisive" primary rule, behind PYTHAGORA_GENRE_DECISIVE=1
-# (default OFF — the strict rule above stays the shipped behavior).
-# Under the decisive rule the primary commits when the top score is at
-# least DECISIVE_MIN_PROB AND at least DECISIVE_DOMINANCE times the
-# runner-up: a clear relative winner at a plausible absolute level,
-# even though it never reaches the strict 0.35 bar (common for this
-# head — e.g. hip-hop at 0.156 vs electronic at 0.092 on a melodic
-# trap record). The genre_note always discloses which rule produced
-# the primary label.
+# Decisive primary rule — the DEFAULT (Marcus's decision, 2026-10-13).
+# The primary commits when the top score is at least DECISIVE_MIN_PROB
+# AND at least DECISIVE_DOMINANCE times the runner-up: a clear relative
+# winner at a plausible absolute level, even though it never reaches
+# the strict 0.35 bar (common for this head — e.g. hip-hop at 0.156 vs
+# electronic at 0.092 on a melodic trap record). Below both bars the
+# primary still reads "Mixed / uncertain" — accuracy over forced
+# labels. Set PYTHAGORA_GENRE_DECISIVE=0 (or false/off) to restore
+# strict-only behavior. The genre_note always discloses which rule
+# produced the primary label.
 DECISIVE_MIN_PROB = 0.10
 DECISIVE_DOMINANCE = 1.5
 
 
 def _decisive_enabled() -> bool:
-    return os.environ.get("PYTHAGORA_GENRE_DECISIVE", "") == "1"
+    value = os.environ.get("PYTHAGORA_GENRE_DECISIVE", "").strip().lower()
+    return value not in ("0", "false", "off", "no")
 
 SAMPLE_RATE = 32000
 WINDOW_SECONDS = 10.0
@@ -170,7 +176,8 @@ def summarize_genre_outputs(clipwise_output: np.ndarray) -> dict:
         primary = top_label
         note = (
             f"Primary genre committed under the decisive rule "
-            f"(PYTHAGORA_GENRE_DECISIVE=1): top score {top_prob:.2f} is at "
+            f"(the default; PYTHAGORA_GENRE_DECISIVE=0 restores "
+            f"strict-only): top score {top_prob:.2f} is at "
             f"least {DECISIVE_MIN_PROB:.2f} and at least "
             f"{DECISIVE_DOMINANCE:g}x the runner-up score "
             f"({runner_prob:.2f}), though below the strict "
