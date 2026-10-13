@@ -22,6 +22,10 @@ Honesty contract:
 - If the top genre probability is below LOW_CONFIDENCE_THRESHOLD, the
   primary genre reads "Mixed / uncertain" and the top candidates are
   still shown — no forced confident label.
+- An alternate decisive rule (top score >= 0.10 AND >= 1.5x the
+  runner-up) exists behind PYTHAGORA_GENRE_DECISIVE=1 for evaluation.
+  It is OFF by default; when it produces the primary label, the note
+  says so explicitly.
 - If the model file is absent or fails to load/run, the stage degrades
   gracefully: primary_genre=None with an explicit note. An analysis
   never crashes over genre.
@@ -44,6 +48,22 @@ MODEL_ID = f"{MODEL_NAME} — {MODEL_VERSION}"
 # lands in the 0.3-0.6 range; 0.35 keeps the forced-label bar honest
 # without labelling everything uncertain).
 LOW_CONFIDENCE_THRESHOLD = 0.35
+
+# Alternate "decisive" primary rule, behind PYTHAGORA_GENRE_DECISIVE=1
+# (default OFF — the strict rule above stays the shipped behavior).
+# Under the decisive rule the primary commits when the top score is at
+# least DECISIVE_MIN_PROB AND at least DECISIVE_DOMINANCE times the
+# runner-up: a clear relative winner at a plausible absolute level,
+# even though it never reaches the strict 0.35 bar (common for this
+# head — e.g. hip-hop at 0.156 vs electronic at 0.092 on a melodic
+# trap record). The genre_note always discloses which rule produced
+# the primary label.
+DECISIVE_MIN_PROB = 0.10
+DECISIVE_DOMINANCE = 1.5
+
+
+def _decisive_enabled() -> bool:
+    return os.environ.get("PYTHAGORA_GENRE_DECISIVE", "") == "1"
 
 SAMPLE_RATE = 32000
 WINDOW_SECONDS = 10.0
@@ -138,16 +158,31 @@ def summarize_genre_outputs(clipwise_output: np.ndarray) -> dict:
             "genre_note": "Genre model returned no genre-class scores.",
         }
     top_label, top_prob = scored[0]
-    if top_prob < LOW_CONFIDENCE_THRESHOLD:
+    runner_prob = scored[1][1] if len(scored) > 1 else 0.0
+    if top_prob >= LOW_CONFIDENCE_THRESHOLD:
+        primary = top_label
+        note = TAXONOMY_NOTE
+    elif (
+        _decisive_enabled()
+        and top_prob >= DECISIVE_MIN_PROB
+        and top_prob >= DECISIVE_DOMINANCE * runner_prob
+    ):
+        primary = top_label
+        note = (
+            f"Primary genre committed under the decisive rule "
+            f"(PYTHAGORA_GENRE_DECISIVE=1): top score {top_prob:.2f} is at "
+            f"least {DECISIVE_MIN_PROB:.2f} and at least "
+            f"{DECISIVE_DOMINANCE:g}x the runner-up score "
+            f"({runner_prob:.2f}), though below the strict "
+            f"{LOW_CONFIDENCE_THRESHOLD:.2f} threshold. " + TAXONOMY_NOTE
+        )
+    else:
         primary = "Mixed / uncertain"
         note = (
             f"Top genre score {top_prob:.2f} is below the "
             f"{LOW_CONFIDENCE_THRESHOLD:.2f} confidence threshold, so no "
             "single genre is claimed. " + TAXONOMY_NOTE
         )
-    else:
-        primary = top_label
-        note = TAXONOMY_NOTE
     return {
         "primary_genre": primary,
         "genre_predictions": predictions,

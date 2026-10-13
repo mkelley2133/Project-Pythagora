@@ -143,7 +143,9 @@ def recognize_chords(
     # Chroma from the harmonic component: drums/808 transients bleed less
     # into pitch-class estimates than they do from the raw mix.
     try:
-        y_harm, _ = librosa.effects.hpss(y)
+        from workers.analysis.audio import hpss_waveform
+
+        y_harm, _ = hpss_waveform(y)
     except Exception:
         y_harm = y
     chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr, hop_length=hop)

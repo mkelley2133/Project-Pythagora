@@ -67,10 +67,18 @@ def _ensure_wav(audio_path: str) -> str:
         return str(p)
     if shutil.which("ffmpeg"):
         out = p.with_suffix(".wav")
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(p), "-ar", "22050", "-ac", "1", str(out)],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(p), "-ar", "22050", "-ac", "1", str(out)],
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Surface an honest, user-readable reason on the job record
+            # instead of the raw subprocess command (which leaks server
+            # paths and tells the user nothing actionable).
+            raise RuntimeError(
+                "Audio conversion failed: ffmpeg could not decode this file."
+            ) from exc
         return str(out)
     return str(p)  # librosa will try (needs audioread for m4a)
 
@@ -113,6 +121,15 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         stage("Measuring tempo & key")
         tempo = audio_mod.estimate_tempo(y, sr) or 0.0
         key = audio_mod.estimate_key(y, sr)
+        if not key.get("key"):
+            # Silent / unpitched audio has no determinable key (the
+            # estimator reports None rather than inventing one). Fail
+            # the job with that honest reason instead of crashing on
+            # the missing value downstream.
+            raise ValueError(
+                "No musical key could be determined — the audio appears "
+                "to be silent or contain no pitched content."
+            )
         key_name, mode = key["key"].rsplit(" ", 1)
 
         stage("Recognizing chords")

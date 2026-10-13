@@ -1,4 +1,6 @@
 import logging
+import os
+import threading
 from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
@@ -14,6 +16,31 @@ from backend.routers.projects import router as projects_router
 from backend.routers.tracks import router as tracks_router
 
 logger = logging.getLogger("pythagoras.api")
+
+
+def _warm_models() -> None:
+    """Pre-load the genre/subgenre model singletons (best effort).
+
+    First-track latency otherwise includes both model loads (~20 s).
+    Runs on a daemon thread so boot is never blocked; a failed warmup
+    changes nothing — the stages degrade lazily exactly as before.
+    """
+    try:
+        from workers.analysis import genre, subgenre
+
+        genre._load_model()
+        subgenre._load_model()
+        logger.info("Model warmup complete (genre + subgenre singletons loaded).")
+    except Exception:  # noqa: BLE001 - warmup is an optimization, never fatal
+        logger.exception("Model warmup failed; models will load lazily.")
+
+
+# Opt-in via PYTHAGORA_WARMUP_MODELS=1 (default off so tests and the
+# demo stay light). The thread starts at import: uvicorn imports this
+# module before serving, so the models are typically ready before the
+# first upload lands.
+if os.environ.get("PYTHAGORA_WARMUP_MODELS", "") == "1":
+    threading.Thread(target=_warm_models, daemon=True, name="pythagora-warmup").start()
 
 # debug stays off: no stack traces or interactive docs internals leak into
 # production error responses (see the 500 handler below and SECURITY.md).

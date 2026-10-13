@@ -54,9 +54,135 @@ def estimate_key(y, sr):
     for i in range(12):
         for name, prof in (("major", MAJOR_PROF), ("minor", MINOR_PROF)):
             r = float(np.corrcoef(np.roll(m, -i), prof)[0, 1])
-            if r > bestr:
+            if np.isfinite(r) and r > bestr:
                 bestr, best = r, f"{PITCH_NAMES[i]} {name}"
+    if best is None:
+        # No finite correlation exists — digital silence (zero-energy
+        # chroma) makes every correlation NaN. Report the key as
+        # undetermined honestly instead of inventing one; callers that
+        # require a key must handle None.
+        return {"key": None, "confidence": 0.0}
     return {"key": best, "confidence": round(_clip01((bestr + 1) / 2), 3)}
+
+
+# ---------------------------------------------------------------------------
+# HPSS with an exact fast median filter.
+#
+# librosa.effects.hpss spends nearly all of its time in scipy's generic
+# median_filter (a rank filter): ~13 s for a 3-minute track on this
+# machine, and the pipeline calls HPSS once per track (core features),
+# once per 15 s section (section map), and once for chord chroma. The
+# filters HPSS needs are 1-D sliding medians of window 31 — along time
+# for the harmonic mask, along frequency for the percussive mask — over
+# the magnitude spectrogram. The numba kernel below computes exactly
+# those medians (same window; same edge convention as scipy.ndimage
+# mode="reflect", where index -1 maps to sample 0), maintaining a sorted
+# window with insert/remove steps. It is verified bit-identical to
+# scipy.ndimage.median_filter on real spectrograms (see
+# tests/test_hpss_fast.py), so every downstream number is unchanged —
+# only the filter engine differs. STFT, softmask (librosa.util.softmask
+# with librosa's power/margin defaults), and ISTFT are librosa's own.
+# If numba is unavailable, this falls back to librosa.effects.hpss.
+# ---------------------------------------------------------------------------
+
+_HPSS_KERNEL = 31
+
+
+def _sliding_median_kernel():
+    """Compile (once) the numba sliding-median kernel; None if no numba."""
+    try:
+        from numba import njit
+    except Exception:  # pragma: no cover - numba ships with librosa
+        return None
+
+    @njit
+    def _median_axis0(a, k, out):
+        # Sliding median along axis 0 of a float64 matrix, one column at
+        # a time, edges reflected scipy-style (-1 -> 0, n -> n-1).
+        rows, cols = a.shape
+        half = k // 2
+        buf = np.empty(k, dtype=np.float64)
+        for j in range(cols):
+            for t in range(k):
+                idx = t - half
+                if idx < 0:
+                    idx = -idx - 1
+                buf[t] = a[idx, j]
+            srt = np.sort(buf)
+            out[0, j] = srt[half]
+            for i in range(1, rows):
+                drop_idx = i - 1 - half
+                if drop_idx < 0:
+                    drop_idx = -drop_idx - 1
+                add_idx = i + half
+                if add_idx >= rows:
+                    add_idx = 2 * rows - 1 - add_idx
+                drop = a[drop_idx, j]
+                add = a[add_idx, j]
+                pos = 0
+                while srt[pos] < drop:
+                    pos += 1
+                while pos < k - 1 and srt[pos] != drop:
+                    pos += 1
+                for t in range(pos, k - 1):
+                    srt[t] = srt[t + 1]
+                pos = k - 2
+                while pos >= 0 and srt[pos] > add:
+                    srt[pos + 1] = srt[pos]
+                    pos -= 1
+                srt[pos + 1] = add
+                out[i, j] = srt[half]
+
+    return _median_axis0
+
+
+_MEDIAN_KERNEL = None
+_MEDIAN_KERNEL_TRIED = False
+
+
+def _median_filter_axis(a: np.ndarray, k: int, axis: int) -> np.ndarray:
+    """Exact 1-D sliding median of `a` along `axis` (scipy reflect edges)."""
+    global _MEDIAN_KERNEL, _MEDIAN_KERNEL_TRIED
+    if not _MEDIAN_KERNEL_TRIED:
+        _MEDIAN_KERNEL_TRIED = True
+        _MEDIAN_KERNEL = _sliding_median_kernel()
+    if _MEDIAN_KERNEL is None or a.shape[axis] < 3:
+        from scipy.ndimage import median_filter
+
+        size = [1] * a.ndim
+        size[axis] = k
+        return median_filter(a, size=size, mode="reflect")
+    work = np.ascontiguousarray(a, dtype=np.float64)
+    if axis == 1:
+        work = work.T
+    out = np.empty_like(work)
+    _MEDIAN_KERNEL(work, k, out)
+    if axis == 1:
+        out = out.T
+    return out.astype(a.dtype, copy=False)
+
+
+def hpss_waveform(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(harmonic, percussive) waveforms — librosa.effects.hpss(y) with
+    default parameters, computed with the fast exact median filters."""
+    import librosa
+
+    try:
+        stft = librosa.core.stft(y)
+        mag, phase = librosa.core.magphase(stft)
+        harm_med = _median_filter_axis(mag, _HPSS_KERNEL, axis=1)
+        perc_med = _median_filter_axis(mag, _HPSS_KERNEL, axis=0)
+        mask_harm = librosa.util.softmask(harm_med, perc_med, power=2.0, split_zeros=True)
+        mask_perc = librosa.util.softmask(perc_med, harm_med, power=2.0, split_zeros=True)
+        y_harm = librosa.core.istft(
+            mag * mask_harm * phase, dtype=y.dtype, length=y.shape[-1]
+        )
+        y_perc = librosa.core.istft(
+            mag * mask_perc * phase, dtype=y.dtype, length=y.shape[-1]
+        )
+        return y_harm, y_perc
+    except Exception:
+        return librosa.effects.hpss(y)
 
 
 def core_features(y, sr):
@@ -68,7 +194,7 @@ def core_features(y, sr):
     total = float(S.sum()) + 1e-9
     sub_share = float(S[(freqs >= 25) & (freqs <= 80)].sum() / total * 100)
 
-    H, P = librosa.effects.hpss(y)
+    H, P = hpss_waveform(y)
     rms_h = float(np.sqrt(np.mean(H ** 2)))
     rms_p = float(np.sqrt(np.mean(P ** 2)))
     perc_share = rms_p / (rms_h + rms_p + 1e-9)
@@ -107,7 +233,7 @@ def section_map(y, sr, window=15):
             continue
         e = float(np.sqrt(np.mean(seg ** 2)))
         c = float(librosa.feature.spectral_centroid(y=seg, sr=sr).mean())
-        _, Pp = librosa.effects.hpss(seg)
+        _, Pp = hpss_waveform(seg)
         pr = float(np.sqrt(np.mean(Pp ** 2)) / (np.sqrt(np.mean(seg ** 2)) + 1e-9))
         sections.append(
             {
@@ -231,7 +357,7 @@ def mood_label(feats, tempo, key):
     arousal = 0.4 * _clip01((t - 60) / 120) + 0.3 * _clip01(feats["energy"] * 8) + 0.3 * _clip01(
         feats["spectral_centroid"] / 8000
     )
-    minor = bool(key and key.get("key", "").endswith("minor"))
+    minor = bool(key and (key.get("key") or "").endswith("minor"))
     valence = 0.5 * feats["harmonic_share"] + (0.2 if not minor else 0.0) + 0.3 * _clip01(
         feats["spectral_centroid"] / 6000
     )
