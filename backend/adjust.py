@@ -56,6 +56,45 @@ def cache_filename(track_id: str, semitones: float, speed: float) -> str:
     return f"{track_id}_st{semitones:+.2f}_sp{speed:.3f}.wav"
 
 
+def _load_for_render(src_path: Path, dest: Path):
+    """Load mono 22050 Hz audio for rendering.
+
+    librosa.load handles wav/mp3/flac/ogg via libsndfile, but M4A/AAC
+    containers fail in environments without a working audioread backend
+    (observed live: every adjusted render of an .m4a upload returned
+    500). Fall back to an ffmpeg decode — the same strategy the
+    analysis pipeline uses in _ensure_wav — into a temp file beside
+    the destination, removed afterwards.
+    """
+    import librosa
+
+    try:
+        return librosa.load(str(src_path), sr=22050, mono=True)
+    except Exception:
+        import shutil
+        import subprocess
+        import tempfile
+
+        if shutil.which("ffmpeg") is None:
+            raise
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".wav", dir=dest.parent, delete=False
+            ) as tf:
+                tmp = Path(tf.name)
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src_path),
+                 "-ar", "22050", "-ac", "1", str(tmp)],
+                check=True,
+            )
+            return librosa.load(str(tmp), sr=22050, mono=True)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+
+
 def render_adjusted(
     src_path: Path, dest: Path, semitones: float, speed: float
 ) -> Path:
@@ -64,7 +103,7 @@ def render_adjusted(
     import librosa
     import soundfile as sf
 
-    y, sr = librosa.load(str(src_path), sr=22050, mono=True)
+    y, sr = _load_for_render(src_path, dest)
     if speed != 1.0:
         y = librosa.effects.time_stretch(y, rate=float(speed))
     if semitones != 0.0:

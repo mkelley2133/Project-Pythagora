@@ -2044,7 +2044,25 @@ async function pollBatch(entries, pill, pillLabel) {
       pending.map(async (entry) => {
         try {
           entry.job = await apiGet(`/tracks/jobs/${entry.jobId}`);
-        } catch { /* transient — keep polling */ }
+          entry.pollFailures = 0;
+        } catch {
+          /* Transient failures keep polling — but not forever. If the
+             job record is gone (the server restarted mid-analysis,
+             which drops its in-memory job registry), every poll 404s
+             and the card would spin eternally. After a few consecutive
+             failures, fail the card with an explanation instead. */
+          entry.pollFailures = (entry.pollFailures || 0) + 1;
+          if (entry.pollFailures >= 5) {
+            entry.job = {
+              state: "failed",
+              error:
+                "Lost contact with this analysis job — the server may " +
+                "have restarted. Re-upload to try again.",
+              progress: entry.job ? entry.job.progress || 0 : 0,
+              stages: entry.job ? entry.job.stages || [] : [],
+            };
+          }
+        }
       })
     );
     renderQueue(entries);
