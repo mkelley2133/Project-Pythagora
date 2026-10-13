@@ -27,12 +27,52 @@ def test_sliding_median_matches_scipy_exactly(shape, axis):
     assert np.array_equal(ref, got)  # bit-identical, not just close
 
 
+def _brute_reflect_median(a, k, axis):
+    """Ground truth: sliding median with repeated half-sample
+    reflection, computed element by element. (scipy's median_filter
+    cannot be the oracle for short axes — see the test below.)"""
+    n = a.shape[axis]
+    half = k // 2
+
+    def reflect(i):
+        while i < 0 or i >= n:
+            i = -i - 1 if i < 0 else 2 * n - 1 - i
+        return i
+
+    out = np.empty_like(a)
+    for pos in range(n):
+        idx = [reflect(pos + d - half) for d in range(k)]
+        window = np.take(a, idx, axis=axis)
+        out[(pos, slice(None)) if axis == 0 else (slice(None), pos)] = np.median(window, axis=axis)
+    return out
+
+
 def test_sliding_median_small_axis_falls_back():
+    # Regression (root-caused 2026-10-13): this (2, 90) / k=31 case
+    # failed intermittently for months because BOTH fast paths are
+    # invalid here — the numba kernel reflects edges only once (needs
+    # axis > k//2), and scipy's median_filter returns heap-dependent
+    # garbage when a 31-wide footprint hits a length-2 axis with
+    # mode="reflect" (57-67 of 180 cells wrong vs brute force, varying
+    # by process heap state). _median_filter_axis now computes short
+    # axes exactly; the oracle is brute force, not scipy.
     rng = np.random.default_rng(3)
     a = rng.standard_normal((2, 90)).astype(np.float32)
-    ref = median_filter(a, size=(31, 1), mode="reflect")
+    ref = _brute_reflect_median(a, 31, 0)
     got = audio_mod._median_filter_axis(a, 31, 0)
     assert np.array_equal(ref, got)
+
+
+def test_sliding_median_short_axes_match_exact():
+    # Short axes (<= k//2) take the exact gather path; longer ones stay
+    # on the kernel. All must equal the brute-force reflected median.
+    rng = np.random.default_rng(5)
+    for shape in [(2, 90), (5, 40), (15, 20), (16, 64)]:
+        for axis in (0, 1):
+            a = rng.standard_normal(shape).astype(np.float32)
+            ref = _brute_reflect_median(a, audio_mod._HPSS_KERNEL, axis)
+            got = audio_mod._median_filter_axis(a, audio_mod._HPSS_KERNEL, axis)
+            assert np.array_equal(ref, got), (shape, axis)
 
 
 def _synthetic_mix(seconds: float = 4.0, sr: int = 22050) -> np.ndarray:

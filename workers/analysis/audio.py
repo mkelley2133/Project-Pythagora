@@ -54,6 +54,14 @@ def estimate_tempo(y, sr):
 def estimate_key(y, sr):
     import librosa
 
+    # A signal with (near-)zero variance carries no pitch: digital
+    # silence is all-zero, and a DC offset is constant — yet a constant
+    # signal still produces finite, meaningless CQT chroma (filter
+    # leakage at 0 Hz), from which the correlation below would happily
+    # "determine" a confident key for content that has no pitch at all.
+    # Report undetermined instead, like the NaN case below.
+    if y.size == 0 or float(np.std(y)) <= 1e-7 * max(1.0, float(np.max(np.abs(y)))):
+        return {"key": None, "confidence": 0.0}
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
     m = chroma.mean(axis=1)
     best, bestr = None, -2.0
@@ -146,13 +154,41 @@ _MEDIAN_KERNEL = None
 _MEDIAN_KERNEL_TRIED = False
 
 
+def _median_reflect_exact(a: np.ndarray, k: int, axis: int) -> np.ndarray:
+    """Sliding median along `axis` with scipy-'reflect' (half-sample
+    symmetric) edges, computed by explicit reflected gathers.
+
+    Only used for axes too short for the numba kernel, whose single
+    edge reflection is equivalent to scipy's repeated reflection only
+    when the axis is longer than half the window. scipy's own
+    median_filter is not a safe fallback there either: for a length-2
+    axis with a 31-wide footprint it returns heap-dependent garbage
+    (verified against this brute force, 2026-10-13 — the cause of the
+    intermittent test_sliding_median_small_axis_falls_back failures).
+    Tiny axes only, so the gather cost is irrelevant; production
+    spectrogram axes are hundreds-to-thousands long. Very short uploads
+    DO land here (a 0.15 s clip has ~7 spectrogram frames)."""
+    n = a.shape[axis]
+    if n == 0:
+        return a.copy()
+    half = k // 2
+    idx = np.arange(n)[:, None] + (np.arange(k) - half)[None, :]
+    period = 2 * n
+    idx = np.mod(idx, period)
+    idx = np.where(idx >= n, period - 1 - idx, idx)
+    gathered = np.take(a, idx, axis=axis)
+    return np.median(gathered, axis=axis + 1).astype(a.dtype, copy=False)
+
+
 def _median_filter_axis(a: np.ndarray, k: int, axis: int) -> np.ndarray:
     """Exact 1-D sliding median of `a` along `axis` (scipy reflect edges)."""
     global _MEDIAN_KERNEL, _MEDIAN_KERNEL_TRIED
     if not _MEDIAN_KERNEL_TRIED:
         _MEDIAN_KERNEL_TRIED = True
         _MEDIAN_KERNEL = _sliding_median_kernel()
-    if _MEDIAN_KERNEL is None or a.shape[axis] < 3:
+    if a.shape[axis] <= k // 2:
+        return _median_reflect_exact(a, k, axis)
+    if _MEDIAN_KERNEL is None:
         from scipy.ndimage import median_filter
 
         size = [1] * a.ndim
