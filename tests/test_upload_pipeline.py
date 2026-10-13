@@ -1,7 +1,8 @@
-"""Upload loop: multipart upload -> background pipeline -> job tracking -> analysis.
+"""Upload loop: multipart upload -> queued pipeline -> job tracking -> analysis.
 
 Builds a 12s synthesized C-F-G progression so the pipeline has real audio
-to measure. Transcription is expected to skip (faster-whisper optional).
+to measure. V1 feature set: no stem separation, no automatic lyric
+transcription — the pipeline analyzes the full mix.
 """
 import io
 import time
@@ -158,30 +159,33 @@ def test_audio_404_when_file_missing():
     assert client.get(f"/tracks/{r.json()['id']}/audio").status_code == 404
 
 
-def test_transcription_confidence_mapping():
-    from workers.analysis.transcribe import confidence_of
+def test_pipeline_v1_feature_set():
+    """V1: the pipeline analyzes the full mix — no stems, no automatic
+    transcription — and reports mix measurements + suggestions."""
+    wav = _synth_wav(seconds=6)
+    r = client.post(
+        "/tracks/upload",
+        data={"title": "V1 Set", "artist": "Test Bot"},
+        files={"audio": ("v1.wav", wav, "audio/wav")},
+    )
+    assert r.status_code == 202, r.text
+    track_id, job_id = r.json()["track"]["id"], r.json()["job_id"]
+    job = _wait_job(job_id)
+    assert job["state"] == "done"
 
-    # confident speech-like segment
-    assert confidence_of(-0.05, 0.01) > 0.9
-    # uncertain segment
-    assert confidence_of(-1.5, 0.1) < 0.3
-    # probably-not-speech tanks the score even with decent logprob
-    assert confidence_of(-0.1, 0.95) < 0.1
-    # garbage in -> 0, never crashes
-    assert confidence_of(float("nan"), 0.0) == 0.0
-    assert 0.0 <= confidence_of(-0.7, 0.2) <= 1.0
+    telemetry = client.get(f"/tracks/{track_id}/analysis").json()["telemetry_json"]
+    assert telemetry["stems"] == []
+    assert telemetry["separation_model"] is None
+    assert telemetry["timestamped_lyrics"] == []
+    assert telemetry["lyrics_language"] is None
+    assert telemetry["lyrics_note"] is None
+    # Phase G outputs are present and measured.
+    assert telemetry["mix_measurements"] is not None
+    assert telemetry["mix_measurements"]["peak_dbfs"] <= 0.0
+    assert isinstance(telemetry["suggestions"], list)
 
-
-def test_transcribe_unavailable_without_faster_whisper():
-    from workers.analysis.transcribe import transcribe
-
-    try:
-        import faster_whisper  # noqa: F401
-        available_expected = True
-    except ImportError:
-        available_expected = False
-    result = transcribe("/tmp/waytoolong.wav")
-    assert result["available"] == available_expected
+    # The stems endpoint is gone in v1.
+    assert client.get(f"/tracks/{track_id}/stems/vocals").status_code == 404
 
 
 def test_audio_head_probe_used_by_player():
@@ -196,35 +200,3 @@ def test_audio_head_probe_used_by_player():
     _wait_job(job_id)
     h = client.head(f"/tracks/{track_id}/audio")
     assert h.status_code == 200, "HEAD probe failed — player falls back to synth"
-
-
-def test_separation_skips_without_demucs():
-    from workers.analysis.separate import separate_vocals
-    res = separate_vocals("/tmp/waytoolong.wav")
-    assert res["available"] is False
-    assert res["vocals_path"] is None
-    assert "demucs" in res["error"].lower()
-
-
-def test_transcribe_model_default_and_env():
-    import os
-    from workers.analysis import transcribe as txmod
-    assert txmod.DEFAULT_MODEL == os.environ.get("PYTHAGORAS_WHISPER_MODEL", "large-v3")
-    res = txmod.transcribe("/tmp/waytoolong.wav", source="full mix")
-    assert res["available"] is False  # faster-whisper not installed here
-    assert res["model"] == txmod.DEFAULT_MODEL
-    assert res["source"] == "full mix"
-
-
-def test_pipeline_transcribes_from_mix_when_no_demucs(monkeypatch):
-    """Pipeline still completes and skips lyrics when neither demucs nor
-    faster-whisper is installed (the codespace-before-install state)."""
-    import workers.pipeline as pipe
-    monkeypatch.setattr(pipe, "separate_vocals", lambda *a, **k: {"available": False, "vocals_path": None, "error": "x"})
-    wav = _synth_wav(seconds=6)
-    r = client.post("/tracks/upload", data={"title": "NoDeps", "artist": "Test Bot"},
-                    files={"audio": ("n.wav", wav, "audio/wav")})
-    track_id, job_id = r.json()["track"]["id"], r.json()["job_id"]
-    _wait_job(job_id)
-    rec = client.get(f"/tracks/{track_id}/analysis").json()
-    assert rec["telemetry_json"]["timestamped_lyrics"] == []
