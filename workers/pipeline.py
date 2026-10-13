@@ -39,7 +39,7 @@ from backend.models.schemas import (
 from workers.analysis import audio as audio_mod
 from workers.analysis import genre as genre_mod
 from workers.analysis import subgenre as subgenre_mod
-from workers.analysis.chords import recognize_chords
+from workers.analysis.chords import recognize_chords_from_audio
 from workers.analysis.measure import measure_mix
 from workers.analysis.suggestions import build_suggestions
 from workers.analysis.vocals import analyze_vocals
@@ -133,15 +133,36 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         key_name, mode = key["key"].rsplit(" ", 1)
 
         stage("Recognizing chords")
+        # One HPSS serves the chord, feature, and section stages (each
+        # used to run its own copy on the same samples — the pipeline's
+        # most expensive repeated computation). If it fails, stages fall
+        # back to computing what they need themselves, exactly as before.
+        try:
+            hpss_pair = audio_mod.hpss_waveform(y)
+        except Exception:  # noqa: BLE001 - per-stage fallback preserves behavior
+            hpss_pair = None
         chord_events = [
-            ChordEvent(**e) for e in recognize_chords(wav_path, key=key_name, mode=mode)
+            ChordEvent(**e)
+            for e in recognize_chords_from_audio(
+                y,
+                sr,
+                key=key_name,
+                mode=mode,
+                y_harm=hpss_pair[0] if hpss_pair is not None else None,
+            )
         ]
 
         stage("Mapping sections & texture")
-        feats = audio_mod.core_features(y, sr)
+        feats = audio_mod.core_features(y, sr, hpss_pair=hpss_pair)
         sections = [
             StructuralSegment(name=s.get("role") or f"Section {i + 1}", start=float(s["start"]), end=float(s["end"]))
-            for i, s in enumerate(audio_mod.section_map(y, sr))
+            for i, s in enumerate(
+                audio_mod.section_map(
+                    y,
+                    sr,
+                    perc_waveform=hpss_pair[1] if hpss_pair is not None else None,
+                )
+            )
         ]
         mood = audio_mod.mood_label(feats, tempo or None, key)
         styles = audio_mod.style_tags(feats, tempo or None, key)

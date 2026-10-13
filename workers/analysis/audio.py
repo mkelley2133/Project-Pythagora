@@ -18,9 +18,15 @@ def _clip01(x):
     return float(max(0.0, min(1.0, x)))
 
 
-def load_audio(path, sr=22050, max_seconds=300):
+def load_audio(path, sr=22050, max_seconds=900):
     import librosa
 
+    # The cap matches the upload duration cap (PYTHAGORA_MAX_DURATION_SECONDS,
+    # default 900s): every pipeline stage must measure the SAME audio. This
+    # loader previously capped at 300s while chords/vocals/genre loaded the
+    # full file, so a 301-900s upload produced a bundle whose stated
+    # duration and sections covered 300s while its chord timeline ran to
+    # the true end.
     y, _ = librosa.load(path, sr=sr, mono=True, duration=max_seconds)
     return y, sr
 
@@ -185,7 +191,7 @@ def hpss_waveform(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return librosa.effects.hpss(y)
 
 
-def core_features(y, sr):
+def core_features(y, sr, hpss_pair=None):
     import librosa
 
     dur = len(y) / sr
@@ -194,7 +200,9 @@ def core_features(y, sr):
     total = float(S.sum()) + 1e-9
     sub_share = float(S[(freqs >= 25) & (freqs <= 80)].sum() / total * 100)
 
-    H, P = hpss_waveform(y)
+    # `hpss_pair` lets the pipeline share one HPSS across stages; the
+    # values are identical to computing it here (same function, same y).
+    H, P = hpss_pair if hpss_pair is not None else hpss_waveform(y)
     rms_h = float(np.sqrt(np.mean(H ** 2)))
     rms_p = float(np.sqrt(np.mean(P ** 2)))
     perc_share = rms_p / (rms_h + rms_p + 1e-9)
@@ -221,8 +229,16 @@ def core_features(y, sr):
     }
 
 
-def section_map(y, sr, window=15):
-    """Split into windows, describe each, and cluster into Peak/Build/Mellow."""
+def section_map(y, sr, window=15, perc_waveform=None):
+    """Split into windows, describe each, and cluster into Peak/Build/Mellow.
+
+    `perc_waveform` may carry the full track's HPSS percussive component
+    (same y, same HPSS) — sections then slice it instead of re-running
+    HPSS per window. NOTE: sliced values can differ from per-window HPSS
+    by HPSS boundary effects at section edges (bounded and checked in
+    tests/test_shared_hpss.py); the default per-window form remains for
+    standalone callers.
+    """
     import librosa
 
     dur = len(y) / sr
@@ -233,7 +249,10 @@ def section_map(y, sr, window=15):
             continue
         e = float(np.sqrt(np.mean(seg ** 2)))
         c = float(librosa.feature.spectral_centroid(y=seg, sr=sr).mean())
-        _, Pp = hpss_waveform(seg)
+        if perc_waveform is not None:
+            Pp = perc_waveform[int(start * sr): int(min(start + window, dur) * sr)]
+        else:
+            _, Pp = hpss_waveform(seg)
         pr = float(np.sqrt(np.mean(Pp ** 2)) / (np.sqrt(np.mean(seg ** 2)) + 1e-9))
         sections.append(
             {

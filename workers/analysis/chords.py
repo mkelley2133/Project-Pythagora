@@ -172,16 +172,51 @@ def recognize_chords(
     y, _ = librosa.load(audio_path, sr=sr, mono=True)
     if y.size == 0:
         return []
+    return recognize_chords_from_audio(
+        y,
+        sr,
+        key=key,
+        mode=mode,
+        window_seconds=window_seconds,
+        beat_sync=beat_sync,
+        transition_penalty=transition_penalty,
+        min_event_seconds=min_event_seconds,
+    )
+
+
+def recognize_chords_from_audio(
+    y: np.ndarray,
+    sr: int = 22050,
+    key: str = "C",
+    mode: str = "major",
+    window_seconds: float = 0.5,
+    beat_sync: bool = True,
+    transition_penalty: float = 0.12,
+    min_event_seconds: float = 0.4,
+    y_harm: np.ndarray | None = None,
+) -> list[dict]:
+    """recognize_chords on an already-decoded waveform.
+
+    `y_harm` may carry a precomputed HPSS harmonic component of `y`
+    (the pipeline shares one HPSS across the chord / features / section
+    stages). The computation is identical either way — when `y_harm` is
+    None it is computed here, with the same raw-signal fallback as
+    before — so results are bit-identical to the path-based entry.
+    """
+    _require_librosa()
+    if y.size == 0:
+        return []
 
     hop = 512
     # Chroma from the harmonic component: drums/808 transients bleed less
     # into pitch-class estimates than they do from the raw mix.
-    try:
-        from workers.analysis.audio import hpss_waveform
+    if y_harm is None:
+        try:
+            from workers.analysis.audio import hpss_waveform
 
-        y_harm, _ = hpss_waveform(y)
-    except Exception:
-        y_harm = y
+            y_harm, _ = hpss_waveform(y)
+        except Exception:
+            y_harm = y
     chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr, hop_length=hop)
     n_frames = chroma.shape[1]
     if n_frames == 0:
