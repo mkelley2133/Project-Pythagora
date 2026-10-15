@@ -25,9 +25,7 @@ import { sortTracks } from "./sort.js";
 /* sequence retries /health with backoff until it answers (Codespaces */
 /* cold starts are slow) and the badge shows LIVE once connected.      */
 /* Demo engages ONLY when the page was not backend-served AND one of:  */
-/*   - hosted on *.github.io (the GitHub Pages demo) with no API base  */
-/*     deliberately configured — a saved/?api= backend address makes  */
-/*     even the hosted page go live so uploads work there,            */
+/*   - hosted on *.github.io (the GitHub Pages demo),                  */
 /*   - explicit ?demo=1 in the URL,                                    */
 /*   - no API answered after the full ~20s retry window.               */
 /* API base resolution order: ?api= (persisted) > localStorage        */
@@ -37,22 +35,8 @@ const _qs = new URLSearchParams(window.location.search);
 const SERVED_BY_BACKEND = Boolean(
   document.querySelector('meta[name="pythagoras-served-by"]')
 );
-const DEMO_BY_QUERY = _qs.get("demo") === "1";
-const DEMO_BY_HOST = /(^|\.)github\.io$/i.test(window.location.hostname);
-const EXPLICIT_DEMO = DEMO_BY_QUERY || DEMO_BY_HOST;
-/* An API base the user deliberately configured (?api= or the saved
-   pythagora_api_base from the upload modal's Connect form) overrides
-   the hosted-demo default: the page must still try to go LIVE against
-   that backend, otherwise the public demo could never accept uploads. */
-const HAS_CONFIGURED_API =
-  Boolean(_qs.get("api")) ||
-  (() => {
-    try {
-      return Boolean(window.localStorage.getItem("pythagora_api_base"));
-    } catch {
-      return false;
-    }
-  })();
+const EXPLICIT_DEMO =
+  _qs.get("demo") === "1" || /(^|\.)github\.io$/i.test(window.location.hostname);
 
 function resolveApiBase() {
   const fromQuery = _qs.get("api");
@@ -338,12 +322,10 @@ function enterDemoMode() {
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function checkApi() {
-  /* Explicit demo is a deliberate choice, not a fallback — honor it
-     immediately. One exception: on the hosted demo (GitHub Pages), a
-     deliberately configured API base (?api= or the saved address from
-     the upload modal's Connect form) means the user wants THIS page
-     live against their backend, so fall through to the health check. */
-  if (DEMO_BY_QUERY || (DEMO_BY_HOST && !HAS_CONFIGURED_API)) {
+  /* Explicit demo (GitHub Pages host or ?demo=1) is a deliberate choice,
+     not a fallback — honor it immediately, even on a backend-served page
+     where the toggle is the only way demo can ever engage. */
+  if (EXPLICIT_DEMO) {
     enterDemoMode();
     return;
   }
@@ -1404,10 +1386,6 @@ function renderDetail(track, telemetry, audioUrl) {
         track.notes = notes;
         toast("Demo mode — saved for this session only.");
       }
-      // Rebuild the library so the new project chip / filter row is
-      // already correct when the user goes back — without this the
-      // save looked like it did nothing.
-      await renderLibrary();
     });
   }
 
@@ -1877,7 +1855,6 @@ function resetUploadModal() {
   document.getElementById("up-title").value = "";
   document.getElementById("up-artist").value = "";
   document.getElementById("up-form").classList.remove("hidden");
-  document.getElementById("up-offline").classList.add("hidden");
   document.getElementById("up-progress").classList.add("hidden");
   document.getElementById("up-back").classList.add("hidden");
   document.getElementById("up-queue").innerHTML = "";
@@ -1971,17 +1948,7 @@ function wireUpload() {
   const modal = document.getElementById("upload-modal");
   const open = () => {
     if (!apiLive) {
-      // Not connected: open the modal's connect panel instead of a
-      // dead-end toast, so the user can point this page at a running
-      // backend (or learn how to start one) without leaving the page.
-      document.getElementById("up-form").classList.add("hidden");
-      document.getElementById("up-progress").classList.add("hidden");
-      document.getElementById("up-offline").classList.remove("hidden");
-      const input = document.getElementById("up-api-url");
-      try {
-        input.value = window.localStorage.getItem("pythagora_api_base") || "";
-      } catch { /* storage unavailable */ }
-      modal.classList.remove("hidden");
+      toast("Upload needs the API — run it locally to ingest tracks.");
       return;
     }
     resetUploadModal();
@@ -1989,25 +1956,6 @@ function wireUpload() {
   };
   const close = () => modal.classList.add("hidden");
   document.getElementById("upload-btn").addEventListener("click", open);
-  document.getElementById("up-connect").addEventListener("click", () => {
-    const raw = document
-      .getElementById("up-api-url")
-      .value.trim()
-      .replace(/\/+$/, "");
-    if (!/^https?:\/\/.+/i.test(raw)) {
-      toast("Enter the backend address, starting with http:// or https://");
-      return;
-    }
-    try {
-      window.localStorage.setItem("pythagora_api_base", raw);
-    } catch {
-      toast("This browser blocked saving the backend address.");
-      return;
-    }
-    // Reload: boot re-resolves the API base, health-checks it, and goes
-    // LIVE if it answers (demo returns if it never does).
-    window.location.reload();
-  });
   document.getElementById("up-cancel").addEventListener("click", close);
   document.getElementById("up-close").addEventListener("click", close);
   modal.addEventListener("click", (e) => {
@@ -2178,10 +2126,7 @@ async function pollBatch(entries, pill, pillLabel) {
 /* ------------------------------------------------------------------ */
 /* Boot                                                              */
 /* ------------------------------------------------------------------ */
-document.getElementById("back-btn").addEventListener("click", () => {
-  showView("library");
-  renderLibrary();
-});
+document.getElementById("back-btn").addEventListener("click", () => showView("library"));
 document.querySelectorAll(".nav-link").forEach((b) => {
   b.addEventListener("click", () => {
     if (b.dataset.nav === "library") showView("library");
