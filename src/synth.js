@@ -3,8 +3,9 @@
  * Plays the demo track's real measured telemetry — Dm / Bb / F / C at
  * 92.4 BPM — through the Web Audio API so the dashboard (waveform playhead,
  * segment + chord highlighting, lyric sync) is fully live without bundled
- * audio files. Real stem audio replaces this once the ingestion pipeline
- * lands.
+ * audio files. Pitch/speed preview adjustments (Phase H) transpose the
+ * voicings and rescale the step clock; the EQ chain (Phase I) taps the
+ * master bus via the onfxready hook.
  */
 
 const CHORD_VOICINGS = {
@@ -19,8 +20,9 @@ export class SynthEngine {
     this.bpm = bpm;
     this.chords = chords.length ? chords : ["Dm"];
     this.duration = duration;
-    this.sixteenth = 60 / bpm / 4;
-    this.barLen = this.sixteenth * 16;
+    this._baseSixteenth = 60 / bpm / 4;
+    this.sixteenth = this._baseSixteenth;
+    this._freqMul = 1; // Phase H preview: semitone transposition factor
     this.ctx = null;
     this.playing = false;
     this.deck = "A"; // A = full mix, B = stripped (pad + bass)
@@ -32,6 +34,17 @@ export class SynthEngine {
     this._noiseBuf = null;
     this.onended = null;
     this.onchord = null;
+    this.onfxready = null; // (ctx, masterNode) hook for the Phase I EQ chain
+  }
+
+  get barLen() {
+    return this.sixteenth * 16;
+  }
+
+  /* Phase H preview: transpose voicings + rescale the step clock. */
+  setAdjust({ semitones = 0, speed = 1 } = {}) {
+    this._freqMul = Math.pow(2, semitones / 12);
+    this.sixteenth = this._baseSixteenth / speed;
   }
 
   get totalSteps() {
@@ -54,6 +67,7 @@ export class SynthEngine {
     this.deckAGain.connect(this.master);
     this.deckBGain.connect(this.master);
     this.setDeck(this.deck, true);
+    if (this.onfxready) this.onfxready(this.ctx, this.master);
     const len = this.ctx.sampleRate * 0.5;
     this._noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const data = this._noiseBuf.getChannelData(0);
@@ -165,6 +179,7 @@ export class SynthEngine {
   }
 
   _padNote(freq, time, dur, gain, ...buses) {
+    freq = freq * (this._freqMul || 1);
     for (const bus of buses) {
       const osc = this.ctx.createOscillator();
       osc.type = "sawtooth";
@@ -186,6 +201,7 @@ export class SynthEngine {
   }
 
   _bassNote(freq, time, dur, gain) {
+    freq = freq * (this._freqMul || 1);
     for (const bus of [this.deckAGain, this.deckBGain]) {
       const osc = this.ctx.createOscillator();
       osc.type = "sine";
@@ -215,6 +231,7 @@ export class SynthEngine {
   }
 
   _pluck(freq, time, dur, gain) {
+    freq = freq * (this._freqMul || 1);
     const osc = this.ctx.createOscillator();
     osc.type = "triangle";
     osc.frequency.value = freq;
