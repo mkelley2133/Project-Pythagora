@@ -51,6 +51,9 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 
 
 _DEV_CORS_ORIGINS = [
+    # The owner's GitHub Pages demo: allowed so the hosted page can be
+    # connected to a running backend (upload modal's Connect form).
+    "https://mkelley2133.github.io",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
     "http://127.0.0.1:5173",

@@ -407,6 +407,8 @@ body {
 .modal-card input[type="file"] { margin-top: 6px; font-size: 13px; color: var(--muted); width: 100%; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 .modal-actions .ghost-btn { margin: 0; }
+#up-offline .panel-sub + .panel-sub { margin-top: 10px; }
+#up-offline code { font-size: 12px; color: var(--text); }
 
 /* ---------- Job progress panel ---------- */
 .job-panel {

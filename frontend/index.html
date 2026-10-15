@@ -57,6 +57,18 @@
         <div class="modal-card up-card">
           <button id="up-close" class="modal-x" aria-label="Close">×</button>
 
+          <div id="up-offline" class="hidden">
+            <p class="eyebrow">Ingest</p>
+            <h2>Uploads need the backend</h2>
+            <p class="panel-sub">This page is the public demo — it browses a sample library, but analyzing your own tracks runs on the Pythagoras backend. Two ways to switch uploads on:</p>
+            <p class="panel-sub"><b>On your own computer:</b> start the backend (<code>python -m uvicorn app.main:app --port 8000</code>) and open the dashboard it serves at <code>http://127.0.0.1:8000</code> — Upload works there directly.</p>
+            <p class="panel-sub"><b>Backend already running elsewhere</b> (for example a GitHub Codespace with port 8000 forwarded): paste its address below and connect. Use the <code>https://</code> address — this page can't reach a plain <code>http://127.0.0.1</code> address from here.</p>
+            <label class="up-api-label">Backend address<input id="up-api-url" type="text" inputmode="url" placeholder="https://your-backend-address" autocomplete="off" spellcheck="false" /></label>
+            <div class="modal-actions">
+              <button id="up-connect" class="cta-btn">Connect</button>
+            </div>
+          </div>
+
           <div id="up-form">
             <p class="eyebrow">Ingest</p>
             <h2>Add to your library</h2>
