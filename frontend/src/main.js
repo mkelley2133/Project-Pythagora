@@ -628,17 +628,18 @@ function renderLibraryControls() {
 }
 
 async function createProject(name) {
+  let created = null;
   if (apiLive) {
     try {
-      const project = await apiSend("POST", "/projects", { name, notes: "" });
+      created = await apiSend("POST", "/projects", { name, notes: "" });
       state.projects = await loadProjects();
-      state.projectFilter = project.id;
+      state.projectFilter = created.id;
     } catch (err) {
       toast("Project failed: " + err.message);
-      return;
+      return null;
     }
   } else {
-    const project = {
+    created = {
       id: `demo-project-${Date.now()}`,
       name,
       notes: "",
@@ -646,11 +647,12 @@ async function createProject(name) {
       track_count: 0,
       track_ids: [],
     };
-    state.projects.push(project);
-    state.projectFilter = project.id;
+    state.projects.push(created);
+    state.projectFilter = created.id;
     toast("Demo mode — project exists for this session only.");
   }
   renderLibrary();
+  return created;
 }
 
 function renderProjectHeader(project) {
@@ -1168,8 +1170,13 @@ function renderDetail(track, telemetry, audioUrl) {
             <select id="org-project">
               <option value="">No project (Unsorted)</option>
               ${state.projects.map((p) => `<option value="${esc(p.id)}"${track.project_id === p.id ? " selected" : ""}>${esc(p.name)}</option>`).join("")}
+              <option value="__new__">＋ New project…</option>
             </select>
           </label>
+          <div id="org-new-row" class="org-new-row hidden">
+            <input id="org-new-name" type="text" placeholder="New project name" maxlength="200" />
+            <button class="ghost-btn" id="org-new-create">Create</button>
+          </div>
           <label class="org-label">Track notes
             <textarea id="org-notes" rows="3" placeholder="Mix notes, version context, TODOs…">${esc(track.notes || "")}</textarea>
           </label>
@@ -1382,10 +1389,42 @@ function renderDetail(track, telemetry, audioUrl) {
   }
 
   /* ---- Phase F: organization (project + notes) ---- */
+  /* Quick-create without leaving the track: the dropdown's
+     "＋ New project…" entry opens an inline name row; creating rebuilds
+     the dropdown with the new project selected, ready for Save. */
+  const orgProjectSel = host.querySelector("#org-project");
+  const orgNewRow = host.querySelector("#org-new-row");
+  if (orgProjectSel && orgNewRow) {
+    orgProjectSel.addEventListener("change", () => {
+      const isNew = orgProjectSel.value === "__new__";
+      orgNewRow.classList.toggle("hidden", !isNew);
+      if (isNew) host.querySelector("#org-new-name").focus();
+    });
+    host.querySelector("#org-new-create").addEventListener("click", async () => {
+      const name = host.querySelector("#org-new-name").value.trim();
+      if (!name) return;
+      const created = await createProject(name);
+      if (!created) return; // createProject already toasted the failure
+      orgProjectSel.innerHTML =
+        `<option value="">No project (Unsorted)</option>` +
+        state.projects
+          .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
+          .join("") +
+        `<option value="__new__">＋ New project…</option>`;
+      orgProjectSel.value = created.id;
+      orgNewRow.classList.add("hidden");
+      toast(`Project "${created.name}" created — hit Save to put this track in it.`);
+    });
+  }
   const orgSave = host.querySelector("#org-save");
   if (orgSave) {
     orgSave.addEventListener("click", async () => {
-      const projectId = host.querySelector("#org-project").value || null;
+      const rawProject = host.querySelector("#org-project").value;
+      if (rawProject === "__new__") {
+        toast("Name the new project and hit Create first — or pick an existing one.");
+        return;
+      }
+      const projectId = rawProject || null;
       const notes = host.querySelector("#org-notes").value;
       if (apiLive) {
         try {
