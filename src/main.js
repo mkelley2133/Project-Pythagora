@@ -265,101 +265,6 @@ async function apiSend(method, path, body) {
   return res.json();
 }
 
-/* ------------------------------------------------------------------ */
-/* Local library (no backend connected)                                */
-/*                                                                     */
-/* The app still works as an organizer with no backend: projects,      */
-/* track groupings, and notes persist in localStorage, and locally     */
-/* added tracks keep their audio in IndexedDB. Analysis (BPM, key,     */
-/* chords) is the only thing that needs the backend.                   */
-/* ------------------------------------------------------------------ */
-const LOCAL_LIB_KEY = "pythagora_local_library_v1";
-const _localObjectUrls = new Map();
-
-function readLocalLibrary() {
-  try {
-    const raw = window.localStorage.getItem(LOCAL_LIB_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.projects) && Array.isArray(parsed.localTracks)) return parsed;
-    }
-  } catch { /* storage unavailable or corrupt — start fresh */ }
-  return {
-    projects: DEMO_PROJECTS.map((p) => ({ ...p })),
-    localTracks: [],
-    demoTrack: { project_id: DEMO_TRACK.project_id ?? null, notes: DEMO_TRACK.notes || "" },
-  };
-}
-
-let localLib = readLocalLibrary();
-
-/* Local mode keeps one source of truth while running: state. Persist
-   it after every mutation so grouping survives a reload. */
-function persistLocalState() {
-  if (apiLive) return;
-  try {
-    localLib.projects = state.projects.map((p) => ({ ...p }));
-    localLib.localTracks = state.tracks.filter((t) => t.local).map((t) => ({ ...t }));
-    const demo = state.tracks.find((t) => t.id === DEMO_TRACK.id);
-    if (demo) {
-      localLib.demoTrack = { project_id: demo.project_id ?? null, notes: demo.notes || "" };
-    }
-    window.localStorage.setItem(LOCAL_LIB_KEY, JSON.stringify(localLib));
-  } catch { /* storage unavailable — grouping stays session-only */ }
-}
-
-function idbOpen() {
-  return new Promise((resolve, reject) => {
-    const rq = window.indexedDB.open("pythagora-local", 1);
-    rq.onupgradeneeded = () => rq.result.createObjectStore("audio");
-    rq.onsuccess = () => resolve(rq.result);
-    rq.onerror = () => reject(rq.error);
-  });
-}
-
-async function idbPutAudio(id, blob) {
-  if (!window.indexedDB) return false;
-  try {
-    const db = await idbOpen();
-    return await new Promise((resolve) => {
-      const tx = db.transaction("audio", "readwrite");
-      tx.objectStore("audio").put(blob, id);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => resolve(false);
-    });
-  } catch {
-    return false;
-  }
-}
-
-async function idbGetAudio(id) {
-  if (!window.indexedDB) return null;
-  try {
-    const db = await idbOpen();
-    return await new Promise((resolve) => {
-      const rq = db.transaction("audio").objectStore("audio").get(id);
-      rq.onsuccess = () => resolve(rq.result || null);
-      rq.onerror = () => resolve(null);
-    });
-  } catch {
-    return null;
-  }
-}
-
-async function localAudioUrl(track) {
-  if (_localObjectUrls.has(track.id)) return _localObjectUrls.get(track.id);
-  const blob = await idbGetAudio(track.id);
-  if (!blob) return null;
-  let url;
-  try {
-    url = URL.createObjectURL(blob);
-  } catch {
-    return null; // no object-URL support — grouping still works, playback doesn't
-  }
-  _localObjectUrls.set(track.id, url);
-  return url;
-}
-
 async function loadProjects() {
   if (apiLive) {
     try {
@@ -370,7 +275,7 @@ async function loadProjects() {
       return [];
     }
   }
-  return localLib.projects.map((p) => ({ ...p }));
+  return DEMO_PROJECTS.map((p) => ({ ...p }));
 }
 
 /* CSP forbids inline onerror handlers, so broken artwork hides itself
@@ -478,14 +383,7 @@ async function loadTracks() {
       return [];
     }
   }
-  return [
-    {
-      ...DEMO_TRACK,
-      project_id: localLib.demoTrack.project_id,
-      notes: localLib.demoTrack.notes,
-    },
-    ...localLib.localTracks.map((t) => ({ ...t })),
-  ];
+  return [DEMO_TRACK];
 }
 
 async function loadAnalysis(trackId, { reportErrors = false } = {}) {
@@ -584,9 +482,7 @@ function moodOf(telemetry) {
 }
 
 function artworkUrl(track) {
-  // Local tracks may carry a small data-URL cover; live tracks are
-  // served by the API; otherwise the gradient cover shows.
-  if (track.artwork_data) return track.artwork_data;
+  // Cover art only exists when the API is live; otherwise the gradient cover shows.
   return apiLive ? `${API_BASE}/tracks/${track.id}/artwork` : null;
 }
 
@@ -732,18 +628,17 @@ function renderLibraryControls() {
 }
 
 async function createProject(name) {
-  let created = null;
   if (apiLive) {
     try {
-      created = await apiSend("POST", "/projects", { name, notes: "" });
+      const project = await apiSend("POST", "/projects", { name, notes: "" });
       state.projects = await loadProjects();
-      state.projectFilter = created.id;
+      state.projectFilter = project.id;
     } catch (err) {
       toast("Project failed: " + err.message);
-      return null;
+      return;
     }
   } else {
-    created = {
+    const project = {
       id: `demo-project-${Date.now()}`,
       name,
       notes: "",
@@ -751,13 +646,11 @@ async function createProject(name) {
       track_count: 0,
       track_ids: [],
     };
-    state.projects.push(created);
-    state.projectFilter = created.id;
-    toast("Project created — saved in this browser.");
+    state.projects.push(project);
+    state.projectFilter = project.id;
+    toast("Demo mode — project exists for this session only.");
   }
-  persistLocalState();
   renderLibrary();
-  return created;
 }
 
 function renderProjectHeader(project) {
@@ -792,8 +685,7 @@ function renderProjectHeader(project) {
     } else {
       project.name = name;
       project.notes = notes;
-      persistLocalState();
-      toast("Project saved in this browser.");
+      toast("Demo mode — saved for this session only.");
     }
     renderLibrary();
   });
@@ -809,7 +701,6 @@ function renderProjectHeader(project) {
     } else {
       state.projects = state.projects.filter((p) => p.id !== project.id);
       for (const t of state.tracks) if (t.project_id === project.id) t.project_id = null;
-      persistLocalState();
     }
     state.projectFilter = "all";
     toast("Project deleted — its tracks are now Unsorted.");
@@ -997,18 +888,15 @@ async function openDetail(trackId) {
   }
   const telemetry = await loadAnalysis(trackId, { reportErrors: true });
   // Prefer the real uploaded recording when the API can serve it;
-  // otherwise fall back to the synthesized stand-in. Unanalyzed tracks
-  // still get their recording (the pending view plays it directly).
+  // otherwise fall back to the synthesized stand-in.
   let audioUrl = null;
-  if (apiLive) {
+  if (apiLive && telemetry) {
     try {
       const r = await fetch(`${API_BASE}/tracks/${trackId}/audio`, { method: "HEAD", headers: apiHeaders() });
       if (r.ok) audioUrl = `${API_BASE}/tracks/${trackId}/audio`;
     } catch {
       /* fall through to synth */
     }
-  } else if (track.local) {
-    audioUrl = await localAudioUrl(track);
   }
   showView("detail");
   renderDetail(track, telemetry, audioUrl);
@@ -1087,98 +975,6 @@ class RealAudioEngine {
   }
 }
 
-/* The Organization panel is rendered for EVERY track — analyzed or
-   not — because grouping tracks must never depend on analysis state.
-   (After a backend restart every track is unanalyzed; hiding this
-   panel then made grouping impossible.) */
-function orgPanelHtml(track) {
-  return `
-        <div class="panel">
-          <h2>Organization</h2>
-          <p class="panel-sub">Project &amp; notes — saved with the track</p>
-          <label class="org-label">Project
-            <select id="org-project">
-              <option value="">No project (Unsorted)</option>
-              ${state.projects.map((p) => `<option value="${esc(p.id)}"${track.project_id === p.id ? " selected" : ""}>${esc(p.name)}</option>`).join("")}
-              <option value="__new__">＋ New project…</option>
-            </select>
-          </label>
-          <div id="org-new-row" class="org-new-row hidden">
-            <input id="org-new-name" type="text" placeholder="New project name" maxlength="200" />
-            <button class="ghost-btn" id="org-new-create">Create</button>
-          </div>
-          <label class="org-label">Track notes
-            <textarea id="org-notes" rows="3" placeholder="Mix notes, version context, TODOs…">${esc(track.notes || "")}</textarea>
-          </label>
-          <button class="cta-btn" id="org-save">Save</button>
-        </div>`;
-}
-
-function wireOrgPanel(host, track) {
-  /* Quick-create without leaving the track: the dropdown's
-     "＋ New project…" entry opens an inline name row; creating rebuilds
-     the dropdown with the new project selected, ready for Save. */
-  const orgProjectSel = host.querySelector("#org-project");
-  const orgNewRow = host.querySelector("#org-new-row");
-  if (orgProjectSel && orgNewRow) {
-    orgProjectSel.addEventListener("change", () => {
-      const isNew = orgProjectSel.value === "__new__";
-      orgNewRow.classList.toggle("hidden", !isNew);
-      if (isNew) host.querySelector("#org-new-name").focus();
-    });
-    host.querySelector("#org-new-create").addEventListener("click", async () => {
-      const name = host.querySelector("#org-new-name").value.trim();
-      if (!name) return;
-      const created = await createProject(name);
-      if (!created) return; // createProject already toasted the failure
-      orgProjectSel.innerHTML =
-        `<option value="">No project (Unsorted)</option>` +
-        state.projects
-          .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`)
-          .join("") +
-        `<option value="__new__">＋ New project…</option>`;
-      orgProjectSel.value = created.id;
-      orgNewRow.classList.add("hidden");
-      toast(`Project "${created.name}" created — hit Save to put this track in it.`);
-    });
-  }
-  const orgSave = host.querySelector("#org-save");
-  if (orgSave) {
-    orgSave.addEventListener("click", async () => {
-      const rawProject = host.querySelector("#org-project").value;
-      if (rawProject === "__new__") {
-        toast("Name the new project and hit Create first — or pick an existing one.");
-        return;
-      }
-      const projectId = rawProject || null;
-      const notes = host.querySelector("#org-notes").value;
-      if (apiLive) {
-        try {
-          const updated = await apiSend("PATCH", `/tracks/${track.id}`, {
-            project_id: projectId,
-            notes,
-          });
-          Object.assign(track, updated);
-          state.projects = await loadProjects();
-          toast("Track saved.");
-        } catch (err) {
-          toast("Save failed: " + err.message);
-          return;
-        }
-      } else {
-        track.project_id = projectId;
-        track.notes = notes;
-        persistLocalState();
-        toast("Track saved in this browser.");
-      }
-      // Rebuild the library so the new project chip / filter row is
-      // already correct when the user goes back — without this the
-      // save looked like it did nothing.
-      await renderLibrary();
-    });
-  }
-}
-
 function renderDetail(track, telemetry, audioUrl) {
   const host = document.getElementById("detail-content");
   const { h1, h2 } = coverHues(track.id);
@@ -1192,12 +988,9 @@ function renderDetail(track, telemetry, audioUrl) {
       </div>
       <div class="panel"><h2>Analysis pending</h2>
         <p class="panel-sub">This track hasn't been analyzed yet.</p>
-        <p style="color:var(--muted);font-size:14px">Run the analysis pipeline to generate its telemetry bundle — BPM, key, segments, chords, rhyme map, and essay will appear here. You can still organize it into a project below.</p>
-      </div>
-      ${audioUrl ? `<div class="panel"><h2>Recording</h2><audio controls preload="metadata" src="${audioUrl}" style="width:100%"></audio></div>` : ""}
-      ${orgPanelHtml(track)}`;
+        <p style="color:var(--muted);font-size:14px">Run the analysis pipeline to generate its telemetry bundle — BPM, key, segments, chords, rhyme map, and essay will appear here.</p>
+      </div>`;
     wireImgFallback(host);
-    wireOrgPanel(host, track);
     return;
   }
 
@@ -1368,7 +1161,20 @@ function renderDetail(track, telemetry, audioUrl) {
           <p class="panel-sub">Fired by deterministic rules over measured values — each quotes its evidence</p>
           <div id="sugg-list"></div>
         </div>
-        ${orgPanelHtml(track)}
+        <div class="panel">
+          <h2>Organization</h2>
+          <p class="panel-sub">Project &amp; notes — saved with the track</p>
+          <label class="org-label">Project
+            <select id="org-project">
+              <option value="">No project (Unsorted)</option>
+              ${state.projects.map((p) => `<option value="${esc(p.id)}"${track.project_id === p.id ? " selected" : ""}>${esc(p.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="org-label">Track notes
+            <textarea id="org-notes" rows="3" placeholder="Mix notes, version context, TODOs…">${esc(track.notes || "")}</textarea>
+          </label>
+          <button class="cta-btn" id="org-save">Save</button>
+        </div>
       </div>
     </div>
 
@@ -1576,7 +1382,34 @@ function renderDetail(track, telemetry, audioUrl) {
   }
 
   /* ---- Phase F: organization (project + notes) ---- */
-  wireOrgPanel(host, track);
+  const orgSave = host.querySelector("#org-save");
+  if (orgSave) {
+    orgSave.addEventListener("click", async () => {
+      const projectId = host.querySelector("#org-project").value || null;
+      const notes = host.querySelector("#org-notes").value;
+      if (apiLive) {
+        try {
+          const updated = await apiSend("PATCH", `/tracks/${track.id}`, {
+            project_id: projectId,
+            notes,
+          });
+          Object.assign(track, updated);
+          state.projects = await loadProjects();
+          toast("Track saved.");
+        } catch (err) {
+          toast("Save failed: " + err.message);
+        }
+      } else {
+        track.project_id = projectId;
+        track.notes = notes;
+        toast("Demo mode — saved for this session only.");
+      }
+      // Rebuild the library so the new project chip / filter row is
+      // already correct when the user goes back — without this the
+      // save looked like it did nothing.
+      await renderLibrary();
+    });
+  }
 
   /* ---- Phase H: pitch & speed ---- */
   fx.adjust = { semitones: 0, speed: 1 };
@@ -2045,7 +1878,6 @@ function resetUploadModal() {
   document.getElementById("up-artist").value = "";
   document.getElementById("up-form").classList.remove("hidden");
   document.getElementById("up-offline").classList.add("hidden");
-  document.getElementById("up-local-note").classList.add("hidden");
   document.getElementById("up-progress").classList.add("hidden");
   document.getElementById("up-back").classList.add("hidden");
   document.getElementById("up-queue").innerHTML = "";
@@ -2137,33 +1969,26 @@ function renderQueue(entries) {
 
 function wireUpload() {
   const modal = document.getElementById("upload-modal");
-  const showConnectPanel = () => {
-    document.getElementById("up-form").classList.add("hidden");
-    document.getElementById("up-progress").classList.add("hidden");
-    document.getElementById("up-offline").classList.remove("hidden");
-    const input = document.getElementById("up-api-url");
-    try {
-      input.value = window.localStorage.getItem("pythagora_api_base") || "";
-    } catch { /* storage unavailable */ }
-  };
   const open = () => {
-    resetUploadModal();
     if (!apiLive) {
-      // Local mode: the familiar form, working entirely in the
-      // browser — tracks can be added and grouped with no backend.
-      // The connect panel stays one click away for full analysis.
-      document.getElementById("up-local-note").classList.remove("hidden");
-      document.getElementById("up-submit").textContent = "Add to library";
+      // Not connected: open the modal's connect panel instead of a
+      // dead-end toast, so the user can point this page at a running
+      // backend (or learn how to start one) without leaving the page.
+      document.getElementById("up-form").classList.add("hidden");
+      document.getElementById("up-progress").classList.add("hidden");
+      document.getElementById("up-offline").classList.remove("hidden");
+      const input = document.getElementById("up-api-url");
+      try {
+        input.value = window.localStorage.getItem("pythagora_api_base") || "";
+      } catch { /* storage unavailable */ }
+      modal.classList.remove("hidden");
+      return;
     }
+    resetUploadModal();
     modal.classList.remove("hidden");
   };
   const close = () => modal.classList.add("hidden");
   document.getElementById("upload-btn").addEventListener("click", open);
-  document.getElementById("up-show-connect").addEventListener("click", showConnectPanel);
-  document.getElementById("up-connect-back").addEventListener("click", () => {
-    document.getElementById("up-offline").classList.add("hidden");
-    document.getElementById("up-form").classList.remove("hidden");
-  });
   document.getElementById("up-connect").addEventListener("click", () => {
     const raw = document
       .getElementById("up-api-url")
@@ -2207,116 +2032,9 @@ function wireUpload() {
     document.getElementById("up-back").classList.add("hidden");
     const btn = document.getElementById("up-submit");
     btn.disabled = false;
-    btn.textContent = apiLive ? "Upload & analyze" : "Add to library";
-    if (!apiLive) document.getElementById("up-local-note").classList.remove("hidden");
+    btn.textContent = "Upload & analyze";
   });
   syncPreview();
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-async function probeDuration(file) {
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return 0;
-    const ac = new AC();
-    const buf = await ac.decodeAudioData(await file.arrayBuffer());
-    const duration = buf.duration || 0;
-    ac.close();
-    return duration;
-  } catch {
-    return 0;
-  }
-}
-
-/* Local ingest: no backend, no analysis — the track is saved in the
-   browser (audio in IndexedDB, metadata in localStorage) so it can be
-   organized into projects immediately and survives reloads. */
-async function submitLocalUpload(files, single, artist, formTitle) {
-  const btn = document.getElementById("up-submit");
-  btn.disabled = true;
-  btn.textContent = "Adding…";
-  document.getElementById("up-form").classList.add("hidden");
-  document.getElementById("up-offline").classList.add("hidden");
-  document.getElementById("up-progress").classList.remove("hidden");
-  document.getElementById("up-prog-title").textContent =
-    files.length > 1
-      ? `Adding ${files.length} tracks locally…`
-      : `Adding "${single && formTitle ? formTitle : titleFromFilename(files[0].name)}" locally`;
-  document.getElementById("up-prog-sub").textContent =
-    "Saved in this browser — group them from the library or the track page. Analysis needs the backend.";
-  renderFocusedStages(null);
-
-  let artworkData = null;
-  if (single && upState.artFile && upState.artFile.size <= 400 * 1024) {
-    try {
-      artworkData = await fileToDataUrl(upState.artFile);
-    } catch { /* artwork is optional */ }
-  }
-
-  const entries = [];
-  let storageWarning = false;
-  for (const file of files) {
-    const entry = {
-      file,
-      title: single && formTitle ? formTitle : titleFromFilename(file.name),
-      trackId: null,
-      jobId: null,
-      job: null,
-      error: null,
-    };
-    entries.push(entry);
-    renderQueue(entries);
-    try {
-      const id = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const duration = await probeDuration(file);
-      const stored = await idbPutAudio(id, file);
-      state.tracks.push({
-        id,
-        title: entry.title,
-        artist,
-        original_file_path: null,
-        artwork_path: null,
-        artwork_data: artworkData,
-        project_id: null,
-        notes: "",
-        created_at: new Date().toISOString(),
-        local: true,
-        duration,
-        audio_stored: stored,
-      });
-      entry.trackId = id;
-      entry.job = { state: "done", stage: "Saved locally", progress: 100, stages: [] };
-      if (!stored) storageWarning = true;
-    } catch (err) {
-      entry.error = err.message;
-    }
-    renderQueue(entries);
-  }
-  persistLocalState();
-  const doneCount = entries.filter((e) => e.trackId).length;
-  document.getElementById("up-prog-sub").textContent =
-    `${doneCount} of ${entries.length} track${entries.length === 1 ? "" : "s"} saved locally. ` +
-    "Group them from the library or the track page — analysis needs the backend." +
-    (storageWarning
-      ? " Note: this browser refused audio storage, so added tracks won't survive a reload or play back."
-      : "");
-  document.getElementById("up-back").classList.remove("hidden");
-  btn.disabled = false;
-  btn.textContent = "Add to library";
-  await renderLibrary();
-  if (entries.length === 1 && doneCount === 1) {
-    await sleep(900);
-    document.getElementById("upload-modal").classList.add("hidden");
-    openDetail(entries[0].trackId);
-  }
 }
 
 async function submitUpload() {
@@ -2328,11 +2046,6 @@ async function submitUpload() {
   const single = files.length === 1;
   const artist = document.getElementById("up-artist").value.trim() || "Unknown Artist";
   const formTitle = document.getElementById("up-title").value.trim();
-
-  if (!apiLive) {
-    await submitLocalUpload(files, single, artist, formTitle);
-    return;
-  }
 
   const btn = document.getElementById("up-submit");
   btn.disabled = true;
