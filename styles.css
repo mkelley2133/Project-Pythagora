@@ -670,6 +670,12 @@ body {
 /* Organization panel (detail view) */
 .org-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 14px; }
 .org-label select { margin: 6px 0 0; display: block; width: 100%; }
+.org-new-row { display: flex; gap: 8px; margin: -6px 0 14px; }
+.org-new-row input {
+  flex: 1; background: rgba(0,0,0,.42); border: 1px solid var(--border-strong); border-radius: 8px;
+  color: var(--text); padding: 8px 11px; font-size: 13px;
+}
+.org-new-row .ghost-btn { margin: 0; }
 #org-save { margin-top: 2px; }
 
 /* Batch file list + queue cards */
