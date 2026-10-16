@@ -1,0 +1,46 @@
+# Project Pythagoras — local stack: API + Celery worker + Redis.
+# Mirrors how the app runs bare-metal:
+#   API:    uvicorn app.main:app --host 0.0.0.0 --port 8000
+#   Worker: celery -A workers.tasks:celery_app worker
+#   Broker: REDIS_URL (backend/config.py settings.redis_url)
+#
+# Model weights (./models) and the track library (./storage) are
+# gitignored host directories, mounted in — they are not in the image.
+# Without ./models the genre/subgenre stages degrade gracefully.
+services:
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      PYTHAGORA_STORAGE_DIR: storage
+    volumes:
+      - ./storage:/app/storage
+      - ./models:/app/models:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: celery -A workers.tasks:celery_app worker --loglevel=info
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      PYTHAGORA_STORAGE_DIR: storage
+    volumes:
+      - ./storage:/app/storage
+      - ./models:/app/models:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis-data:

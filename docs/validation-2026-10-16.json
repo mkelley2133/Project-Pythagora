@@ -1,0 +1,96 @@
+{
+  "rows": [
+    {
+      "track": "Dirty Dyana",
+      "metric": "tempo (BPM)",
+      "expected": "117.5 \u00b12.0",
+      "got": 117.5,
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "track": "Way Too Long",
+      "metric": "tempo (BPM)",
+      "expected": "161.5 \u00b13.0 (or half-time 80.7 \u00b11.5)",
+      "got": 161.5,
+      "status": "PASS",
+      "note": "full-time reading"
+    },
+    {
+      "track": "Way Too Long",
+      "metric": "key",
+      "expected": "E major",
+      "got": "E major",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "track": "Way Too Long",
+      "metric": "key confidence",
+      "expected": "0.805 \u00b10.05",
+      "got": 0.805,
+      "status": "PASS",
+      "note": "verified-run value, 2026-10-14"
+    },
+    {
+      "track": "This Side",
+      "metric": "primary genre (decisive rule)",
+      "expected": "Hip hop music",
+      "got": "Hip hop music",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "track": "Drowning",
+      "metric": "primary genre (trained model)",
+      "expected": "Mixed / uncertain",
+      "got": "Mixed / uncertain",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "track": "Drowning",
+      "metric": "top subgenre (CLAP zero-shot)",
+      "expected": "country",
+      "got": "country",
+      "status": "PASS",
+      "note": "artist-confirmed by ear 2026-10-16"
+    },
+    {
+      "track": "Drowning",
+      "metric": "top subgenre share (%)",
+      "expected": "26 \u00b16",
+      "got": 26.0,
+      "status": "PASS",
+      "note": "similarity share, not a probability"
+    }
+  ],
+  "chords": {
+    "Dirty Dyana": {
+      "events": 58,
+      "mean_event_seconds": 2.25,
+      "median_event_seconds": 2.0,
+      "unique_chords": 5
+    },
+    "Way Too Long": {
+      "events": 70,
+      "mean_event_seconds": 2.24,
+      "median_event_seconds": 1.88,
+      "unique_chords": 9
+    },
+    "This Side": {
+      "events": 44,
+      "mean_event_seconds": 4.37,
+      "median_event_seconds": 5.2,
+      "unique_chords": 6
+    },
+    "Drowning": {
+      "events": 31,
+      "mean_event_seconds": 4.68,
+      "median_event_seconds": 4.27,
+      "unique_chords": 9
+    }
+  },
+  "passed": 8,
+  "scored": 8
+}
