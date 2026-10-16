@@ -39,6 +39,7 @@ from backend.models.schemas import (
     TrackUpdate,
 )
 from backend.report import render_comparison_html, render_report_html
+from backend.similarity import similar_tracks as find_similar_tracks
 
 router = APIRouter(
     prefix="/tracks",
@@ -295,6 +296,21 @@ def compare_tracks(a: str = Query(...), b: str = Query(...)) -> dict:
 def compare_report(a: str = Query(...), b: str = Query(...)) -> HTMLResponse:
     """Branded printable comparison report (Phase E)."""
     return HTMLResponse(content=render_comparison_html(_comparison_or_404(a, b)))
+
+
+@router.get("/{track_id}/similar")
+def similar_tracks(track_id: str, top_n: int = Query(5, ge=1, le=25)) -> dict:
+    """Tracks most similar to this one by CLAP audio-embedding cosine.
+
+    Retrieval over the library's embeddings (backend/similarity.py) —
+    a sonic-closeness ranking, not a genre claim. Degrades to an empty
+    ranking with an explanatory note when the CLAP weights are absent.
+    """
+    security.validate_id(track_id, "track id")
+    result = find_similar_tracks(track_id, top_n=top_n)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return result
 
 
 @router.get("/{track_id}", response_model=TrackRecord)

@@ -1,0 +1,13 @@
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+# Host-mounted at runtime (see docker-compose.yml); never baked in.
+storage
+models
+docs
+*.md
+.env

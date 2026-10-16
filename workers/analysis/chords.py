@@ -3,10 +3,11 @@
 Pipeline: HPSS harmonic component -> CQT chromagram -> beat-synchronous
 segments (fixed windows when beat tracking is unreliable) -> cosine
 similarity against 24 major/minor triad templates -> harmonic-bleed
-correction (see _BLEED_BETA) -> Viterbi temporal smoothing (chord changes
-prefer beat boundaries; single-segment flips are suppressed) -> short-event
-absorption -> merged chord events -> Roman numerals relative to the track's
-key.
+correction (see _BLEED_BETA) -> median smoothing of the per-segment
+similarities -> Viterbi temporal smoothing (chord changes prefer beat
+boundaries; single-segment flips are suppressed) -> majority filter over
+the label path -> short-event absorption -> merged chord events -> Roman
+numerals relative to the track's key.
 
 Everything here is deterministic signal processing (no generative models),
 in keeping with the project's zero-hallucination design: a chord label is a
@@ -123,6 +124,73 @@ def _require_librosa() -> None:
         raise RuntimeError("librosa is required for chord recognition")
 
 
+# Temporal smoothing of the segment evidence (added 2026-10-16).
+#
+# Known limit this addresses: on trap material the per-segment chroma
+# median can flicker between adjacent labels inside a single bar (a
+# melody note or an 808 glide tips one beat-segment's template match to
+# a neighbor chord, then back). Viterbi alone lets such flips through
+# whenever the local similarity gain beats the transition penalty twice,
+# and the short-event absorption (min_event_seconds) cannot remove them
+# because each flicker segment is a full beat long.
+#
+# Two label-agnostic filters, both with the smallest window that removes
+# single-segment islands (one segment either side — at beat-sync that is
+# roughly one beat of context each way):
+#
+# - _median_smooth_sims: a 3-segment median over the similarity matrix.
+#   The median (not the mean) keeps genuine chord boundaries sharp: a
+#   sustained change still steps, while one segment of contrary evidence
+#   is outvoted by its two neighbors. Applied to a COPY of the
+#   similarities used only for the path search — reported confidences
+#   keep coming from the raw per-segment similarities.
+# - _majority_smooth_labels: a 3-segment majority (mode) filter over the
+#   Viterbi label path, removing any residual single-segment island.
+#   Ties keep the center label, so a genuine two-segment event is never
+#   erased by its neighbors.
+_SMOOTH_WINDOW = 3
+
+
+def _median_smooth_sims(sims: np.ndarray, window: int = _SMOOTH_WINDOW) -> np.ndarray:
+    """Median-filter the similarity matrix along the segment axis.
+
+    sims: (n_segments, n_labels). Returns a NEW array; the input is the
+    raw evidence and is left untouched (confidence reporting reads it).
+    """
+    n = sims.shape[0]
+    if n < window or window < 3 or window % 2 == 0:
+        return sims.astype(float).copy()
+    half = window // 2
+    padded = np.pad(sims, ((half, half), (0, 0)), mode="edge")
+    stacked = np.stack(
+        [padded[offset : offset + n] for offset in range(window)], axis=0
+    )
+    return np.median(stacked, axis=0)
+
+
+def _majority_smooth_labels(label_idx: np.ndarray, window: int = _SMOOTH_WINDOW) -> np.ndarray:
+    """Majority (mode) filter over a per-segment label path.
+
+    A segment keeps its label unless both neighbors (within the window)
+    agree on a different one; count ties resolve to the center label.
+    Sustained changes (runs of 2+) pass through untouched.
+    """
+    n = label_idx.shape[0]
+    if n < window or window < 3 or window % 2 == 0:
+        return label_idx.astype(int).copy()
+    half = window // 2
+    out = label_idx.astype(int).copy()
+    n_labels = int(label_idx.max()) + 1 if n else 0
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        counts = np.bincount(label_idx[lo:hi], minlength=n_labels)
+        best = int(np.argmax(counts))
+        if counts[label_idx[i]] < counts[best]:
+            out[i] = best
+    return out
+
+
 def _viterbi_smooth(sims: np.ndarray, transition_penalty: float = 0.12) -> np.ndarray:
     """Best label path through per-segment template similarities.
 
@@ -162,8 +230,9 @@ def recognize_chords(
 
     Beat tracking anchors chord changes to beats (the fix for over-segmented
     trap harmony); when beats can't be tracked reliably the recognizer falls
-    back to fixed windows. Either way, labels pass through Viterbi smoothing
-    and sub-`min_event_seconds` events are absorbed into a neighbor.
+    back to fixed windows. Either way, the similarities pass a median filter,
+    labels pass through Viterbi smoothing and a majority filter, and
+    sub-`min_event_seconds` events are absorbed into a neighbor.
 
     Returns a list of merged events:
     {"chord": "Dm", "roman": "iv", "start": 10.5, "end": 13.0, "confidence": 0.87}
@@ -283,7 +352,13 @@ def recognize_chords_from_audio(
             # invent a chord change.
             seg_sims[i] = seg_sims[i - 1] if i > 0 else -1.0
 
-    label_idx = _viterbi_smooth(seg_sims, transition_penalty)
+    # Temporal smoothing (see _SMOOTH_WINDOW): the path search runs on a
+    # median-smoothed copy of the similarities and the resulting label
+    # path passes a majority filter; confidences below still read the
+    # RAW seg_sims, so what gets reported is the track's actual evidence
+    # for the chosen labels, not the smoothed copy's.
+    path_sims = _median_smooth_sims(seg_sims)
+    label_idx = _majority_smooth_labels(_viterbi_smooth(path_sims, transition_penalty))
     labels = [_CHORD_NAMES[j] for j in label_idx]
     if silent[0]:
         labels[0] = "N.C."

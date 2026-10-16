@@ -1,0 +1,33 @@
+# Shared volumes for the API and worker pods.
+# - pythagoras-storage: the track library (storage/library.json +
+#   storage/audio). Must be ReadWriteMany if API and worker pods land
+#   on different nodes, or ReadWriteOnce with both pods co-located.
+# - pythagoras-models: the genre/subgenre weights (~1 GB, gitignored
+#   in the repo). Populate once from the host models/ directory; the
+#   pods mount it read-only and the stages degrade gracefully if it is
+#   empty.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pythagoras-storage
+  labels:
+    app.kubernetes.io/name: pythagoras
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pythagoras-models
+  labels:
+    app.kubernetes.io/name: pythagoras
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi

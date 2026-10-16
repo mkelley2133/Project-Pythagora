@@ -1,0 +1,52 @@
+# Project Pythagoras — Celery worker. Same image as the API, celery
+# entrypoint (workers/tasks.py: celery_app, broker from REDIS_URL).
+# replicas is deliberately 1 for the same reason as the API: pipeline
+# jobs report into a per-process job registry in v1.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pythagoras-worker
+  labels:
+    app.kubernetes.io/name: pythagoras
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pythagoras
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pythagoras
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: project-pythagoras:latest
+          command: ["celery", "-A", "workers.tasks:celery_app", "worker", "--loglevel=info"]
+          env:
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+            - name: PYTHAGORA_STORAGE_DIR
+              value: storage
+          volumeMounts:
+            - name: storage
+              mountPath: /app/storage
+            - name: models
+              mountPath: /app/models
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: pythagoras-storage
+        - name: models
+          persistentVolumeClaim:
+            claimName: pythagoras-models
