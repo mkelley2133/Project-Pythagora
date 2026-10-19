@@ -77,6 +77,13 @@ def telemetry_facts(track: TrackRecord, telemetry: TelemetryBundle) -> str:
             f"Subgenre similarity: {pred.label} ({pred.family}) — similarity share {pred.percent:.1f}% "
             "(a similarity share, not a probability)"
         )
+    if t.primary_emotion:
+        lines.append(f"Primary emotion match: {t.primary_emotion}")
+    for pred in t.emotion_predictions[:3]:
+        lines.append(
+            f"Emotion similarity: {pred.label} — zero-shot emotion similarity share {pred.percent:.1f}% "
+            "(a similarity share, not a probability, and not a claim about what the track feels)"
+        )
     unique_chords = list(dict.fromkeys(e.chord for e in t.chord_timeline)) or t.chords
     if unique_chords:
         lines.append(f"Chords used: {', '.join(unique_chords)}")

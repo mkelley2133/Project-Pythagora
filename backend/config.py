@@ -16,7 +16,7 @@ Security-relevant knobs (see SECURITY.md):
   PYTHAGORA_RATE_WINDOW_SECONDS  — rate-limit window (default 60).
   PYTHAGORA_MAX_CONCURRENT_JOBS  — simultaneous analysis jobs (default 4).
   PYTHAGORA_ENABLE_HSTS          — "1" to send Strict-Transport-Security.
-  PYTHAGORA_WARMUP_MODELS        — "1" pre-loads genre/subgenre models at boot.
+  PYTHAGORA_WARMUP_MODELS        — "1" pre-loads genre/subgenre/emotion models at boot.
   PYTHAGORA_GENRE_DECISIVE       — the decisive primary-genre rule is
                                    the default; "0" restores strict-only
                                    behavior (see workers/analysis/genre.py).

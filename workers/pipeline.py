@@ -5,7 +5,10 @@ in the genre stage: broad genre runs a trained model (PANNs Cnn10,
 AudioSet) and reports its real output probabilities — see
 workers/analysis/genre.py — and subgenre runs zero-shot CLAP matching
 whose similarity shares are labeled as such, never as probabilities —
-see workers/analysis/subgenre.py. Both degrade gracefully when their
+see workers/analysis/subgenre.py. Emotion runs the same CLAP matching
+against emotion descriptions and reports zero-shot emotion similarity
+shares under the same labeling contract — see
+workers/analysis/emotion.py. All degrade gracefully when their
 model files are absent. Anything that cannot be measured or credibly
 inferred is skipped or left empty — never invented.
 
@@ -26,6 +29,7 @@ from backend import jobs
 from backend import store
 from backend.models.schemas import (
     ChordEvent,
+    EmotionPrediction,
     GenrePrediction,
     MixMeasurements,
     MixSuggestion,
@@ -37,6 +41,7 @@ from backend.models.schemas import (
     VocalProfile,
 )
 from workers.analysis import audio as audio_mod
+from workers.analysis import emotion as emotion_mod
 from workers.analysis import genre as genre_mod
 from workers.analysis import subgenre as subgenre_mod
 from workers.analysis.chords import recognize_chords_from_audio
@@ -176,6 +181,12 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
         # contract; its percents are similarity shares, not trained
         # probabilities (labeled in subgenre_note and downstream).
         subgenre = subgenre_mod.analyze_subgenre(wav_path)
+        # Zero-shot emotion matching (same LAION CLAP model). Same
+        # degradation contract; its percents are zero-shot emotion
+        # similarity shares, not trained probabilities and not a claim
+        # about what the track feels (labeled in emotion_note and
+        # downstream).
+        emotion = emotion_mod.analyze_emotion(wav_path)
 
         stage("Rendering waveform")
         peaks = waveform_peaks(wav_path)
@@ -253,6 +264,12 @@ def run_pipeline(job_id: str, track_id: str, audio_path: str) -> dict:
             ],
             subgenre_model=subgenre.get("subgenre_model"),
             subgenre_note=subgenre.get("subgenre_note"),
+            primary_emotion=emotion.get("primary_emotion"),
+            emotion_predictions=[
+                EmotionPrediction(**p) for p in emotion.get("emotion_predictions", [])
+            ],
+            emotion_model=emotion.get("emotion_model"),
+            emotion_note=emotion.get("emotion_note"),
             texture_cues=[
                 TextureCue(name=s["tag"], note=s.get("reason", "")) for s in styles[:4]
             ],

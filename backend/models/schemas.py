@@ -37,6 +37,21 @@ class SubgenrePrediction(BaseModel):
     percent: float = Field(..., ge=0.0, le=100.0, description="Similarity share (%)")
 
 
+class EmotionPrediction(BaseModel):
+    """One zero-shot emotion match from CLAP (workers/analysis/emotion.py).
+
+    `percent` is a zero-shot emotion similarity share (softmax over a
+    fixed candidate prompt set, in percent) — NOT a trained classifier
+    probability and NOT a claim about what the track actually feels.
+    The bundle's emotion_note states this wherever the values appear.
+    """
+
+    label: str = Field(..., description="Emotion label from the candidate vocabulary")
+    percent: float = Field(
+        ..., ge=0.0, le=100.0, description="Zero-shot emotion similarity share (%)"
+    )
+
+
 class TextureCue(BaseModel):
     """A texture/style cue from the deterministic style rules
     (workers/analysis/audio.py style_tags). Texture is NOT genre:
@@ -188,6 +203,25 @@ class TelemetryBundle(BaseModel):
     subgenre_note: str | None = Field(
         default=None,
         description="Subgenre caveats: the similarity-share honesty note, the no-commit explanation, or why the model was unavailable",
+    )
+    primary_emotion: str | None = Field(
+        default=None,
+        description=(
+            "Top zero-shot emotion match (CLAP) when its similarity share "
+            "is decisive; None when no match commits or the model was unavailable. "
+            "A similarity read, never a definitive statement of what the track feels"
+        ),
+    )
+    emotion_predictions: list[EmotionPrediction] = Field(
+        default_factory=list,
+        description="Top emotion matches with zero-shot emotion similarity-share percents (not probabilities)",
+    )
+    emotion_model: str | None = Field(
+        default=None, description="Name/version of the zero-shot emotion model that ran"
+    )
+    emotion_note: str | None = Field(
+        default=None,
+        description="Emotion caveats: the zero-shot similarity-share honesty note, the no-commit explanation, or why the model was unavailable",
     )
     texture_cues: list[TextureCue] = Field(
         default_factory=list,

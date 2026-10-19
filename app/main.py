@@ -19,18 +19,19 @@ logger = logging.getLogger("pythagoras.api")
 
 
 def _warm_models() -> None:
-    """Pre-load the genre/subgenre model singletons (best effort).
+    """Pre-load the genre/subgenre/emotion model singletons (best effort).
 
-    First-track latency otherwise includes both model loads (~20 s).
+    First-track latency otherwise includes the model loads (~20 s).
     Runs on a daemon thread so boot is never blocked; a failed warmup
     changes nothing — the stages degrade lazily exactly as before.
     """
     try:
-        from workers.analysis import genre, subgenre
+        from workers.analysis import emotion, genre, subgenre
 
         genre._load_model()
         subgenre._load_model()
-        logger.info("Model warmup complete (genre + subgenre singletons loaded).")
+        emotion._load_model()
+        logger.info("Model warmup complete (genre + subgenre + emotion singletons loaded).")
     except Exception:  # noqa: BLE001 - warmup is an optimization, never fatal
         logger.exception("Model warmup failed; models will load lazily.")
 
